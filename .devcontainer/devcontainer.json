@@ -1,0 +1,31 @@
+{
+  "name": "asr_test_go",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "node",
+  "containerEnv": {
+    "GH_CONFIG_DIR": "/home/node/.config/gh"
+  },
+  "remoteEnv": {
+    "PATH": "${localEnv:HOME}/.codex/packages/standalone/current/bin:${containerEnv:PATH}"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "mounts": [
+    "source=${localEnv:HOME}/.codex/packages/standalone,target=${localEnv:HOME}/.codex/packages/standalone,type=bind,readonly",
+    "source=${localEnv:HOME}/.codex/auth.json,target=/home/node/.codex/auth.json,type=bind",
+    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind"
+  ],
+  "initializeCommand": "bash .devcontainer/check-host.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go", "openai.chatgpt"],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "go.buildTags": "webkit2_41"
+      }
+    }
+  }
+}
