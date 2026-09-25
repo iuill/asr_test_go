@@ -10,8 +10,19 @@ if [[ ! -x "$codex_binary" ]]; then
 fi
 "$codex_binary" --version >/dev/null
 
+claude_binary="${HOME}/.local/bin/claude"
+if [[ ! -x "$claude_binary" ]]; then
+    printf 'Host Claude Code executable not found: %s\n' "$claude_binary" >&2
+    exit 1
+fi
+"$claude_binary" --version >/dev/null
+
 if [[ ! -f "${HOME}/.codex/auth.json" ]]; then
     printf 'Run codex login on the host before starting the container.\n' >&2
+    exit 1
+fi
+if [[ ! -f "${HOME}/.claude/.credentials.json" || ! -f "${HOME}/.claude.json" ]]; then
+    printf 'Run claude login on the host before starting the container.\n' >&2
     exit 1
 fi
 if [[ ! -d "${HOME}/.config/gh" ]]; then
