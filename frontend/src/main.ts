@@ -13,7 +13,11 @@ root.innerHTML = `
     <section class="panel intro"><div><h2>マイクから文字起こし</h2><p>GPT Liveは発話中に途中結果を表示します。他のモデルは発話後に送信します。APIの利用料金が発生します。</p></div></section>
     <section class="panel"><div class="section-head"><h2>入力マイク</h2><button id="refreshMics" class="quiet">マイク一覧を更新</button></div><div class="mic-row"><div class="mic-control"><select id="microphone" aria-label="入力マイク"><option value="">システム既定のマイク</option></select><span id="activeMic" class="hint">録音開始後に使用マイクを表示します</span></div></div></section>
     <details id="modelsPanel" class="panel" open><summary><strong>モデル</strong><span id="modelSummary" class="hint"></span></summary><div class="model-detail"><div class="section-head"><span class="hint">利用するモデルを選択</span><button id="reload" class="quiet">設定を再読込</button></div><p id="configMessage" class="hint"></p><div id="models" class="models"></div></div></details>
-    <div class="diagnostics"><label><input id="showTimestamps" type="checkbox"> 文字起こしに時刻を表示</label><label><input id="autoSave" type="checkbox"> 5分ごとに自動保存</label><span id="autoSaveStatus" class="hint"></span><label><input id="debugLogging" type="checkbox"> デバッグログを保存</label><span id="logStatus" class="hint"></span></div>
+    <div class="diagnostics" aria-label="表示と保存の設定">
+      <div class="diagnostic-option"><label><input id="showTimestamps" type="checkbox"> 文字起こしに時刻を表示</label><span class="hint">結果と保存ファイルに反映</span></div>
+      <div class="diagnostic-option"><label><input id="autoSave" type="checkbox"> 結果ごとに自動保存</label><span id="autoSaveStatus" class="hint"></span></div>
+      <div class="diagnostic-option"><label><input id="debugLogging" type="checkbox"> デバッグログを保存</label><span id="logStatus" class="hint"></span></div>
+    </div>
     <section class="toolbar"><button id="start" class="primary">録音を開始</button><button id="stop" disabled>停止</button><canvas id="spectrum" class="spectrum" width="176" height="42" aria-label="マイク入力のスペクトル"></canvas><button id="clear" class="quiet">結果を消去</button><button id="save" class="quiet">テキスト保存</button><span id="status">待機中</span></section>
     <section id="results" class="results"></section>
   </main><footer>音声は選択したクラウドAPIへ送信されます。認証情報はEXE横の設定ファイルから読み込みます。</footer>`;
@@ -36,9 +40,9 @@ let liveQueue: Promise<void> = Promise.resolve();
 let liveActive = false;
 let liveFailed = false;
 let liveRotationTimer: number | null = null;
-let autoSaveTimer: number | null = null;
 let autoSavePath = '';
 let autoSaveQueue: Promise<void> = Promise.resolve();
+let autoSaveFinishing = false;
 let recording = false;
 let stopping = false;
 const selected = new Set<string>();
@@ -140,8 +144,15 @@ function transcriptContent(currentRecordingOnly = false): string {
 
 function setAutoSaveStatus(message: string) {
   $('autoSaveStatus').textContent = message;
-  $('autoSaveStatus').title = autoSavePath || info.autoSaveDir;
-  $('autoSaveStatus').classList.toggle('error', message.includes('エラー') || message.includes('できません'));
+  const error = message.includes('エラー') || message.includes('できません');
+  $('autoSaveStatus').title = error ? message : autoSavePath || info.autoSaveDir;
+  $('autoSaveStatus').classList.toggle('error', error);
+}
+
+function setLogStatus(message: string, error = false) {
+  $('logStatus').textContent = message;
+  $('logStatus').title = error ? message : info.logPath;
+  $('logStatus').classList.toggle('error', error);
 }
 
 async function beginAutoSave() {
@@ -149,7 +160,7 @@ async function beginAutoSave() {
   try {
     autoSavePath = await BeginAutoSave();
     setAutoSaveStatus(`保存先: transcripts/${autoSavePath.split(/[\\/]/).pop()}`);
-    autoSaveTimer = window.setInterval(() => { void queueAutoSave(); }, 5 * 60 * 1000);
+    if (autoHistories.size) void queueAutoSave();
   } catch (error) {
     setAutoSaveStatus(`自動保存を開始できません: ${String(error)}`);
   }
@@ -170,8 +181,9 @@ function queueAutoSave(final = false): Promise<void> {
 }
 
 async function finishAutoSave() {
-  if (autoSaveTimer !== null) { window.clearInterval(autoSaveTimer); autoSaveTimer = null; }
+  autoSaveFinishing = true;
   await queueAutoSave(true);
+  autoSaveFinishing = false;
 }
 
 function addTranscript(id: string, text: string) {
@@ -184,6 +196,7 @@ function addTranscript(id: string, text: string) {
     if (!saved) { saved = []; autoHistories.set(id, saved); }
     saved.push(entry);
   }
+  if (autoSavePath && !autoSaveFinishing) void queueAutoSave();
 }
 
 function flashResult(id: string) {
@@ -314,9 +327,9 @@ async function reload() {
   $('version').textContent = `v${info.version}`;
   ($('showTimestamps') as HTMLInputElement).checked = info.showTimestamps;
   ($('autoSave') as HTMLInputElement).checked = info.autoSave;
-  if (!autoSavePath) setAutoSaveStatus(info.autoSave ? '保存先: EXE横の transcripts フォルダ' : '');
+  if (!autoSavePath) setAutoSaveStatus(info.autoSave ? '保存先: transcripts/' : '');
   ($('debugLogging') as HTMLInputElement).checked = info.debugLogging;
-  $('logStatus').textContent = info.logError ? `画面設定エラー: ${info.logError}` : info.debugLogging ? `保存先: ${info.logPath}` : '';
+  setLogStatus(info.logError ? `画面設定エラー: ${info.logError}` : info.debugLogging ? '保存先: logs/asr-studio.log' : '', Boolean(info.logError));
   for (const id of Array.from(selected)) if (!info.models.find(m => m.id === id && m.available)) selected.delete(id);
   if (!selected.size) { const first = info.models.find(m => m.available); if (first) selected.add(first.id); }
   renderModels(); renderResults();
@@ -451,7 +464,6 @@ async function stop() {
   stopping = true;
   ($('autoSave') as HTMLInputElement).disabled = true;
   if (liveRotationTimer !== null) { window.clearInterval(liveRotationTimer); liveRotationTimer = null; }
-  if (autoSaveTimer !== null) { window.clearInterval(autoSaveTimer); autoSaveTimer = null; }
   if (recording) void LogDiagnostic('microphone_stopped');
   flush(); processor?.disconnect(); source?.disconnect(); analyser?.disconnect(); silentGain?.disconnect(); stream?.getTracks().forEach(track => track.stop());
   cancelAnimationFrame(animationFrame); analyser = null; silentGain = null; drawSpectrum();
@@ -485,8 +497,8 @@ $('debugLogging').addEventListener('change', async () => {
   const toggle = $('debugLogging') as HTMLInputElement;
   toggle.disabled = true;
   try { await SetDebugLogging(toggle.checked); }
-  catch (error) { $('logStatus').textContent = `ログ設定エラー: ${String(error)}`; }
-  finally { await reload().catch(error => $('logStatus').textContent = String(error)); toggle.disabled = false; }
+  catch (error) { setLogStatus(`ログ設定エラー: ${String(error)}`, true); }
+  finally { await reload().catch(error => setLogStatus(String(error), true)); toggle.disabled = false; }
 });
 $('showTimestamps').addEventListener('change', async () => {
   const toggle = $('showTimestamps') as HTMLInputElement;
