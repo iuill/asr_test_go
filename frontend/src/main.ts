@@ -1,11 +1,11 @@
 import type { main } from '../wailsjs/go/models';
 import { AutoSaveSession } from './autosave-session';
 import { TranscriptStore, formatEntry } from './transcript-store';
-import { encodeWav, encodeLivePCM } from './audio-encoding';
+import { encodeWav, encodeLivePCM, encodeGooglePCM } from './audio-encoding';
 import { microphoneConstraints, SpeechSegmenter, type CaptureMode } from './speech-segmenter';
 import './style.css';
 import appIcon from './assets/app-icon.svg';
-import { AppendLive, BeginAutoSave, CommitLive, EndAutoSave, GetInfo, LogDiagnostic, SaveTranscript, SetAutoSave, SetDebugLogging, SetShowTimestamps, StartLive, StopLive, Transcribe, WriteAutoSave } from '../wailsjs/go/main/App';
+import { AppendGoogleStream, AppendLive, BeginAutoSave, CommitLive, EndAutoSave, EndGoogleStream, GetInfo, LogDiagnostic, SaveTranscript, SetAutoSave, SetDebugLogging, SetShowTimestamps, StartGoogleStream, StartLive, StopLive, Transcribe, WriteAutoSave } from '../wailsjs/go/main/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 
 type Info = main.AppInfo;
@@ -13,7 +13,7 @@ const root = document.querySelector<HTMLDivElement>('#app')!;
 root.innerHTML = `
   <header><div class="brand"><img src="${appIcon}" alt=""><h1>ASR Studio</h1></div><span id="version" class="badge">v0.0.1</span></header>
   <main>
-    <section class="panel intro"><div><h2>マイクから文字起こし</h2><p>GPT Liveは発話中に途中結果を表示します。他のモデルは発話後に送信します。APIの利用料金が発生します。</p></div></section>
+    <section class="panel intro"><div><h2>マイクから文字起こし</h2><p>GPT LiveとGoogle V1は発話中に途中結果を表示します。Chirp 3は途中結果が返った場合に表示します。OpenAI GPT TranscribeとAzureは発話後に送信します。APIの利用料金が発生します。</p></div></section>
     <section class="panel"><div class="section-head"><h2>入力マイク</h2><button id="refreshMics" class="quiet">マイク一覧を更新</button></div><div class="mic-row"><div class="mic-control"><select id="microphone" aria-label="入力マイク"><option value="">システム既定のマイク</option></select><span id="activeMic" class="hint">録音開始後に使用マイクを表示します</span></div></div><label class="mic-mode"><input id="distantVoices" type="checkbox"> 離れた声を拾う <span class="hint">周囲の音も拾いやすくなります</span></label></section>
     <details id="modelsPanel" class="panel" open><summary><strong>モデル</strong><span id="modelSummary" class="hint"></span></summary><div class="model-detail"><div class="section-head"><span class="hint">利用するモデルを選択</span><button id="reload" class="quiet">設定を再読込</button></div><p id="configMessage" class="hint"></p><div id="models" class="models"></div></div></details>
     <div class="diagnostics" aria-label="表示と保存の設定">
@@ -40,6 +40,17 @@ let liveQueue: Promise<void> = Promise.resolve();
 let liveActive = false;
 let liveFailed = false;
 let liveRotationTimer: number | null = null;
+type GoogleModelID = 'google-v1' | 'google-chirp-3';
+type GoogleSession = { id: string; queue: Promise<void>; failed: boolean };
+const googleActive = new Map<GoogleModelID, GoogleSession>();
+const googlePending = new Set<Promise<void>>();
+const googlePartial = new Map<GoogleModelID, Map<string, string>>();
+const googleFinals = new Map<string, Set<number>>();
+let googleAudioFrames: Float32Array[] = [];
+let googleAudioSamples = 0;
+let googleRotationTimer: number | null = null;
+let recordingSerial = 0;
+let googleTurnSerial = 0;
 type RecordingPhase = 'idle' | 'starting' | 'recording' | 'stopping';
 let phase: RecordingPhase = 'idle';
 const selected = new Set<string>();
@@ -74,7 +85,9 @@ function showTranscript(id: string, highlightNew = false, emptyMessage = '結果
   if (!target) return;
   const followTail = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
   const entries = transcripts.entries(id);
-  const partial = id === 'gpt-live-transcribe' ? Array.from(livePartial.values()).join(' ') : '';
+  const partial = id === 'gpt-live-transcribe'
+    ? Array.from(livePartial.values()).join(' ')
+    : Array.from(googlePartial.get(id as GoogleModelID)?.values() || []).join(' ');
   if (highlightNew) {
     const until = Date.now() + 3000;
     highlightUntil.set(id, until);
@@ -181,6 +194,45 @@ EventsOn('live-transcript', (event: {type: string; item_id?: string; delta?: str
   } else if (event.type === 'error') {
     liveFailed = true;
     if (state) state.textContent = `エラー: ${event.message || 'Live接続に失敗しました'}`;
+  }
+});
+
+function recordGoogleFinal(model: GoogleModelID, sessionID: string, index: number, text: string) {
+  if (!sessionID.startsWith(`r${recordingSerial}-`) || !text.trim()) return;
+  let seen = googleFinals.get(sessionID);
+  if (!seen) { seen = new Set(); googleFinals.set(sessionID, seen); }
+  if (seen.has(index)) return;
+  seen.add(index);
+  googlePartial.get(model)?.delete(sessionID);
+  addTranscript(model, text.trim());
+  showTranscript(model, true);
+  flashResult(model);
+  const state = document.getElementById(`state-${model}`);
+  if (state) state.textContent = '認識中';
+}
+
+EventsOn('google-transcript', (event: {type: string; model_id: GoogleModelID; turn_id: string; index?: number; text?: string; message?: string}) => {
+  if (event.model_id !== 'google-v1' && event.model_id !== 'google-chirp-3') return;
+  if (!event.turn_id.startsWith(`r${recordingSerial}-`)) return;
+  const partials = googlePartial.get(event.model_id) || new Map<string, string>();
+  googlePartial.set(event.model_id, partials);
+  const state = document.getElementById(`state-${event.model_id}`);
+  if (event.type === 'partial') {
+    if (googleActive.get(event.model_id)?.id !== event.turn_id) return;
+    partials.set(event.turn_id, event.text || '');
+    showTranscript(event.model_id);
+    if (state) state.textContent = '認識中';
+  } else if (event.type === 'completed') {
+    recordGoogleFinal(event.model_id, event.turn_id, event.index ?? 0, event.text || '');
+  } else if (event.type === 'error') {
+    partials.delete(event.turn_id);
+    showTranscript(event.model_id);
+    if (state && googleActive.get(event.model_id)?.id === event.turn_id) {
+      state.textContent = `エラー: ${event.message || 'Google接続に失敗しました'}`;
+    }
+  } else if (event.type === 'ended') {
+    partials.delete(event.turn_id);
+    showTranscript(event.model_id);
   }
 });
 
@@ -309,6 +361,68 @@ function queueLiveCommit() {
     const state = $('state-gpt-live-transcribe'); if (state) state.textContent = `エラー: ${String(error)}`;
   });
 }
+function startGoogleStreams() {
+  for (const model of ['google-v1', 'google-chirp-3'] as GoogleModelID[]) {
+    if (!selected.has(model)) continue;
+    const id = `r${recordingSerial}-t${++googleTurnSerial}`;
+    const session: GoogleSession = { id, queue: Promise.resolve(), failed: false };
+    session.queue = StartGoogleStream(model, id).catch(error => googleStreamFailure(model, session, error));
+    googleActive.set(model, session);
+  }
+}
+function googleStreamFailure(model: GoogleModelID, session: GoogleSession, error: unknown) {
+  session.failed = true;
+  const state = document.getElementById(`state-${model}`);
+  if (state && googleActive.get(model) === session) state.textContent = `エラー: ${String(error)}`;
+}
+function appendGoogleAudio(frame: Float32Array, sampleRate: number) {
+  if (!googleActive.size) return;
+  googleAudioFrames.push(frame);
+  googleAudioSamples += frame.length;
+  if (googleAudioSamples >= sampleRate * 0.1) flushGoogleAudio(sampleRate);
+}
+function flushGoogleAudio(sampleRate: number) {
+  if (!googleAudioSamples) return;
+  const audio = new Float32Array(googleAudioSamples);
+  let offset = 0;
+  for (const frame of googleAudioFrames) { audio.set(frame, offset); offset += frame.length; }
+  googleAudioFrames = [];
+  googleAudioSamples = 0;
+  const encoded = encodeGooglePCM(audio, sampleRate);
+  for (const [model, session] of googleActive) {
+    session.queue = session.queue.then(() => {
+      if (session.failed) return;
+      return AppendGoogleStream(model, session.id, encoded);
+    }).catch(error => googleStreamFailure(model, session, error));
+  }
+}
+function finishGoogleStreams() {
+  for (const [model, session] of googleActive) {
+    googleActive.delete(model);
+    const finishing = session.queue.then(async () => {
+      const finals = await EndGoogleStream(model, session.id);
+      finals?.forEach((text, index) => recordGoogleFinal(model, session.id, index, text));
+      googlePartial.get(model)?.delete(session.id);
+      showTranscript(model);
+      const state = document.getElementById(`state-${model}`);
+      if (state && !googleActive.has(model) && !session.failed) state.textContent = '完了';
+    }).catch(async error => {
+      try { await EndGoogleStream(model, session.id); } catch { /* close a failed stream */ }
+      googlePartial.get(model)?.delete(session.id);
+      showTranscript(model);
+      const state = document.getElementById(`state-${model}`);
+      if (state && !googleActive.has(model)) state.textContent = `エラー: ${String(error)}`;
+    });
+    googlePending.add(finishing);
+    void finishing.finally(() => googlePending.delete(finishing));
+  }
+}
+function rotateGoogleStreams() {
+  if (phase !== 'recording' || !context || !googleActive.size) return;
+  flushGoogleAudio(context.sampleRate);
+  finishGoogleStreams();
+  startGoogleStreams();
+}
 function rotateLiveConnection() {
   if (phase !== 'recording' || !liveActive || liveFailed) return;
   // Realtime sessions end after 60 minutes. Finish the current turn before reconnecting.
@@ -334,7 +448,7 @@ function submitAudio(audio: Float32Array, sampleRate: number) {
   if (audio.length < sampleRate * 0.35) return;
   const wav = encodeWav(audio, sampleRate);
   for (const id of selected) {
-    if (id === 'gpt-live-transcribe') continue;
+    if (id === 'gpt-live-transcribe' || id === 'google-v1' || id === 'google-chirp-3') continue;
     const previous = requestChains.get(id) || Promise.resolve();
     const next = previous.catch(() => {}).then(async () => {
       const state = $(`state-${id}`); if (state) state.textContent = '送信中…';
@@ -356,6 +470,9 @@ async function start() {
   try {
     transcripts.beginRecording();
     livePartial.clear();
+    googlePartial.clear();
+    googleFinals.clear();
+    recordingSerial++;
     const deviceId = ($('microphone') as HTMLSelectElement).value;
     const mode: CaptureMode = ($('distantVoices') as HTMLInputElement).checked ? 'distant' : 'normal';
     stream = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(mode, deviceId), video: false });
@@ -365,6 +482,7 @@ async function start() {
     await refreshMicrophones(false);
     if (selected.has('gpt-live-transcribe')) { await StartLive(); liveActive = true; liveFailed = false; liveQueue = Promise.resolve(); }
     await beginAutoSave();
+    startGoogleStreams();
     if (track.readyState === 'ended') throw new Error('マイクが切断されました');
     track.addEventListener('ended', () => { if (phase === 'recording') void stop(); });
     segmenter = new SpeechSegmenter(mode);
@@ -378,11 +496,13 @@ async function start() {
       const frame = new Float32Array(event.inputBuffer.getChannelData(0));
       const { frames, completed } = segmenter!.push(frame, context!.sampleRate);
       for (const chunk of frames) queueLiveFrame(chunk);
+      appendGoogleAudio(frame, context!.sampleRate);
       if (completed) submitAudio(completed, context!.sampleRate);
     };
     source.connect(processor); processor.connect(context.destination);
     setRecordingPhase('recording');
     if (liveActive) liveRotationTimer = window.setInterval(rotateLiveConnection, 50 * 60 * 1000);
+    if (googleActive.size) googleRotationTimer = window.setInterval(rotateGoogleStreams, 4 * 60 * 1000);
     ($('modelsPanel') as HTMLDetailsElement).open = false;
     document.body.classList.add('recording');
     $('status').textContent = '録音中';
@@ -406,8 +526,11 @@ async function stop() {
   $('status').textContent = '残りの文字起こしを処理中…';
   const errors: string[] = [];
   if (liveRotationTimer !== null) { window.clearInterval(liveRotationTimer); liveRotationTimer = null; }
+  if (googleRotationTimer !== null) { window.clearInterval(googleRotationTimer); googleRotationTimer = null; }
   flush();
   if (processor) processor.onaudioprocess = null;
+  if (context) flushGoogleAudio(context.sampleRate);
+  finishGoogleStreams();
   processor?.disconnect(); source?.disconnect(); analyser?.disconnect(); silentGain?.disconnect();
   stream?.getTracks().forEach(track => track.stop());
   cancelAnimationFrame(animationFrame); analyser = null; silentGain = null; drawSpectrum();
@@ -421,8 +544,10 @@ async function stop() {
   // Drain every recording, even with autosave off, before allowing the next one.
   await Promise.allSettled(Array.from(requestChains.values()));
   requestChains.clear();
+  await Promise.allSettled(Array.from(googlePending));
   await finishAutoSave();
   livePartial.clear();
+  googlePartial.clear();
   if (selected.has('gpt-live-transcribe')) showTranscript('gpt-live-transcribe');
   setRecordingPhase('idle');
   ($('modelsPanel') as HTMLDetailsElement).open = true;
@@ -477,7 +602,7 @@ $('autoSave').addEventListener('change', async () => {
   } finally { toggle.disabled = phase === 'starting' || phase === 'stopping'; }
 });
 $('start').addEventListener('click', start); $('stop').addEventListener('click', stop);
-$('clear').addEventListener('click', () => { transcripts.clearDisplay(); livePartial.clear(); renderResults(); });
+$('clear').addEventListener('click', () => { transcripts.clearDisplay(); livePartial.clear(); googlePartial.clear(); renderResults(); });
 $('save').addEventListener('click', async () => {
   const content = transcriptContent();
   if (!content) { $('status').textContent = '保存する結果がありません'; return; }

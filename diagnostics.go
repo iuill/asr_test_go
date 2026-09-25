@@ -1,12 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const maxLogSize = 5 * 1024 * 1024
@@ -99,6 +105,80 @@ func safeLogCode(code string) string {
 		}
 	}
 	return code
+}
+
+const maxAPIErrorLogLength = 4096
+
+var longEncodedValue = regexp.MustCompile(`[A-Za-z0-9_+/=-]{100,}`)
+var bearerValue = regexp.MustCompile(`(?i)bearer\s+[^\s"']+`)
+
+func safeStreamErrorMessage(message string) string {
+	message = bearerValue.ReplaceAllString(message, "Bearer [redacted]")
+	message = longEncodedValue.ReplaceAllString(message, "[redacted]")
+	if len(message) > maxAPIErrorLogLength {
+		message = message[:maxAPIErrorLogLength]
+	}
+	return strconv.Quote(message)
+}
+
+// Keep provider error details useful for diagnosis without writing credentials,
+// request payloads, or unbounded/multiline responses to the debug log.
+func safeAPIErrorBody(body []byte, req *http.Request) string {
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return "[non-JSON API error body omitted]"
+	}
+	secrets := []string{}
+	for _, name := range []string{"Authorization", "Ocp-Apim-Subscription-Key", "X-Goog-Api-Key"} {
+		if header := req.Header.Get(name); header != "" {
+			secrets = append(secrets, header)
+			if strings.HasPrefix(strings.ToLower(header), "bearer ") {
+				secrets = append(secrets, header[7:])
+			}
+		}
+	}
+	value = sanitizeAPIErrorValue(value, secrets)
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "[API error body could not be encoded]"
+	}
+	if len(encoded) > maxAPIErrorLogLength {
+		const suffix = "[truncated]"
+		limit := maxAPIErrorLogLength - len(suffix)
+		for !utf8.RuneStart(encoded[limit]) {
+			limit--
+		}
+		return string(encoded[:limit]) + suffix
+	}
+	return string(encoded)
+}
+
+func sanitizeAPIErrorValue(value any, secrets []string) any {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			lower := strings.ToLower(key)
+			if strings.Contains(lower, "key") || strings.Contains(lower, "token") || strings.Contains(lower, "secret") || strings.Contains(lower, "credential") || strings.Contains(lower, "authorization") || lower == "audio" || lower == "content" || lower == "transcript" || lower == "payload" {
+				v[key] = "[redacted]"
+				continue
+			}
+			v[key] = sanitizeAPIErrorValue(child, secrets)
+		}
+		return v
+	case []any:
+		for i, child := range v {
+			v[i] = sanitizeAPIErrorValue(child, secrets)
+		}
+		return v
+	case string:
+		for _, secret := range secrets {
+			v = strings.ReplaceAll(v, secret, "[redacted]")
+		}
+		v = longEncodedValue.ReplaceAllString(v, "[redacted]")
+		return v
+	default:
+		return value
+	}
 }
 
 func rotateLogs(path string) error {

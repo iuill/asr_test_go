@@ -1,8 +1,8 @@
 # ASR Studio（asr_test_go）
 
-[asr_test_docker](https://github.com/iuill/asr_test_docker) のクラウド音声認識機能を Go + Wails v2 の Windows アプリに移したものです。マイクから発話を取り込み、選択した複数のモデルの結果を並べて比較できます。入力マイクは一覧から選択でき、録音中は実際に使用しているデバイス名を表示します。GPT Liveは発話中に途中結果を表示します。その他のモデルは発話終了から約0.8秒の無音で送信し、長い発話は15秒で区切ります。結果はテキストとして保存できます。
+[asr_test_docker](https://github.com/iuill/asr_test_docker) のクラウド音声認識機能を Go + Wails v2 の Windows アプリに移したものです。マイクから発話を取り込み、選択した複数のモデルの結果を並べて比較できます。入力マイクは一覧から選択でき、録音中は実際に使用しているデバイス名を表示します。GPT LiveとGoogle V1は発話中に途中結果を表示します。Chirp 3も途中結果が返れば表示しますが、短い発話では確定結果だけになる場合があります。OpenAI GPT TranscribeとAzureは発話終了から約0.8秒の無音で区切り、長い発話は15秒で区切ります。結果はテキストとして保存できます。
 
-GPT LiveはRealtime APIでストリーミングし、その他のモデルは発話単位の同期APIを使います。閲覧者向けセッション共有とログイン機能は含まれません。ローカルモデルやDockerは不要です。録音開始時にモデル一覧は自動で折りたたまれ、マイク入力のスペクトルを表示します。
+GPT LiveはRealtime API、Google V1 / Chirp 3はgRPCでストリーミングします。Googleの接続は録音中維持し、約4分ごとに新しいストリームへ切り替えます。OpenAI GPT TranscribeとAzureは発話単位の同期APIを使います。途中結果は画面にだけ表示し、確定結果を履歴と自動保存に加えます。閲覧者向けセッション共有とログイン機能は含まれません。ローカルモデルやDockerは不要です。録音開始時にモデル一覧は自動で折りたたまれ、マイク入力のスペクトルを表示します。
 
 ## 対応API
 
@@ -59,7 +59,7 @@ GPT LiveのRealtime接続はセッションの60分上限より前に、録音�
 
 `language` は必須です。`ja-JP` のような言語・地域コードを 1 つ指定してください。OpenAI には言語部分 (`ja`)、Azure と Google には `ja-JP` を送ります。`azure_speech.locale` と `google.locale` は使用しません。既存の設定ファイルから削除し、ルートの `language` に移してください。スペクトル表示は操作ボタンの「停止」と「結果を消去」の間にあります。
 
-画面の「デバッグログを保存」を ON にすると、EXE と同じフォルダの `logs/asr-studio.log` に動作状況とエラー種別を記録します。各ファイルは最大 5MB で、現在のログと `.1`、`.2` の計 3 世代を保持します。OFF の間はログを書きません。選択状態は EXE 横の `asr-studio.preferences.json` に保存され、次回起動時にも引き継がれます。API キー、音声、文字起こし本文はログに記録しません。EXE を置いたフォルダに書き込み権限が必要です。
+画面の「デバッグログを保存」を ON にすると、EXE と同じフォルダの `logs/asr-studio.log` に動作状況と API エラーの応答本文を記録します。エラー本文は送信した認証情報や認証情報・音声データに相当する項目を伏せ、1 件あたり最大 4KB に制限します。プロジェクト ID など、API が返した診断情報は含まれます。各ファイルは最大 5MB で、現在のログと `.1`、`.2` の計 3 世代を保持します。OFF の間はログを書きません。選択状態は EXE 横の `asr-studio.preferences.json` に保存され、次回起動時にも引き継がれます。EXE を置いたフォルダに書き込み権限が必要です。
 
 画面の「文字起こしに時刻を表示」で、各確定結果の先頭にローカル時刻 `[hh:mm]` を付けるか切り替えられます。テキスト保存にも現在の表示設定が反映され、選択状態は同じ `asr-studio.preferences.json` に保存されます。新着結果のカードは短く光り、結果欄が末尾を表示している場合は自動で下へスクロールします。
 
@@ -80,7 +80,7 @@ go test ./...
 
 出力は `build/bin/asr_test_go.exe` です。初回ビルド時には同じフォルダに設定テンプレートもコピーします。生成済みの `frontend/wailsjs` をGitで管理するため、Goの公開メソッドを変更したら `generate-bindings.sh` を再実行してください。
 
-設定の読込・検証は `config.go`、クラウドへの発話送信は `transcription.go`、Live接続は `live.go` に分けています。ファイル保存は `persistence.go` に集約しています。フロントエンドの音声変換、履歴管理、自動保存の順序制御はそれぞれ `audio-encoding.ts`、`transcript-store.ts`、`autosave-session.ts` に置き、画面や実際のAPI接続なしでテストできます。録音停止時は、自動保存のON/OFFに関わらず処理中の認識を待ってから次の録音を受け付けます。
+設定の読込・検証は `config.go`、同期APIへの発話送信は `transcription.go`、GPT Live接続は `live.go`、Googleのストリーミング接続は `google_stream.go` に分けています。ファイル保存は `persistence.go` に集約しています。フロントエンドの音声変換、履歴管理、自動保存の順序制御はそれぞれ `audio-encoding.ts`、`transcript-store.ts`、`autosave-session.ts` に置き、画面や実際のAPI接続なしでテストできます。録音停止時は、自動保存のON/OFFに関わらず処理中の認識を待ってから次の録音を受け付けます。
 
 ## GitHub Releases
 

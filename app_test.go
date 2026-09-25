@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -134,5 +136,39 @@ func TestLanguageIsRequiredAndNormalized(t *testing.T) {
 	got, err := normalizeLanguage(" JA-jp ")
 	if err != nil || got != "ja-JP" {
 		t.Fatalf("normalized language = %q, %v", got, err)
+	}
+}
+
+func TestAPIErrorBodyIsLoggedWithoutCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":403,"message":"Grant roles/serviceusage.serviceUsageConsumer to use project example-project. Bearer test-token","status":"PERMISSION_DENIED","details":[{"reason":"USER_PROJECT_DENIED","api_key":"secret-in-response","content":"audio-in-response"}]}}`))
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	a := NewApp()
+	a.debug.configure(true, filepath.Join(root, "asr-studio.preferences.json"))
+	req, err := http.NewRequest(http.MethodPost, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-token")
+	_, err = a.do(req)
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("API error = %v", err)
+	}
+	log, err := os.ReadFile(filepath.Join(root, "logs", "asr-studio.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"roles/serviceusage.serviceUsageConsumer", "USER_PROJECT_DENIED", "PERMISSION_DENIED"} {
+		if !strings.Contains(string(log), expected) {
+			t.Errorf("log does not contain %q", expected)
+		}
+	}
+	for _, secret := range []string{"test-token", "secret-in-response", "audio-in-response"} {
+		if strings.Contains(string(log), secret) {
+			t.Errorf("log contains sensitive value %q", secret)
+		}
 	}
 }

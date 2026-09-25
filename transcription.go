@@ -178,6 +178,7 @@ func (a *App) do(req *http.Request) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		a.debug.logf("ERROR", "api response status=%d body=%s", resp.StatusCode, safeAPIErrorBody(data, req))
 		return nil, fmt.Errorf("APIエラー (%d): %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	return data, nil

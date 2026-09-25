@@ -37,14 +37,16 @@ type Transcript struct {
 	Text string `json:"text"`
 }
 type App struct {
-	ctx      context.Context
-	client   *http.Client
-	debug    debugLogger
-	prefMu   sync.Mutex
-	liveMu   sync.Mutex
-	live     *liveSession
-	autoMu   sync.Mutex
-	autoPath string
+	ctx           context.Context
+	client        *http.Client
+	debug         debugLogger
+	prefMu        sync.Mutex
+	liveMu        sync.Mutex
+	live          *liveSession
+	googleMu      sync.Mutex
+	googleStreams map[string]*googleStreamSession
+	autoMu        sync.Mutex
+	autoPath      string
 }
 
 func NewApp() *App { return &App{client: &http.Client{Timeout: 90 * time.Second}} }

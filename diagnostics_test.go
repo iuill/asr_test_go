@@ -53,3 +53,10 @@ func TestSafeLogCodeDoesNotRecordArbitraryText(t *testing.T) {
 		t.Fatalf("sensitive text was retained: %q", got)
 	}
 }
+
+func TestSafeStreamErrorMessageKeepsPermissionReasonWithoutToken(t *testing.T) {
+	message := safeStreamErrorMessage("permission denied: grant roles/serviceusage.serviceUsageConsumer\nBearer secret-token")
+	if !strings.Contains(message, "roles/serviceusage.serviceUsageConsumer") || strings.Contains(message, "secret-token") || strings.Contains(message, "\n") {
+		t.Fatalf("unsafe stream error message: %q", message)
+	}
+}

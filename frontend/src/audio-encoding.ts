@@ -18,8 +18,8 @@ export function encodeWav(input: Float32Array, originalRate: number): string {
   for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(binary);
 }
-export function encodeLivePCM(input: Float32Array, originalRate: number): string {
-  const rate = 24000, count = Math.floor(input.length * rate / originalRate);
+function encodePCM(input: Float32Array, originalRate: number, rate: number): string {
+  const count = Math.floor(input.length * rate / originalRate);
   const pcm = new Int16Array(count);
   for (let i = 0; i < count; i++) {
     const pos = i * originalRate / rate, low = Math.floor(pos), frac = pos - low;
@@ -29,4 +29,12 @@ export function encodeLivePCM(input: Float32Array, originalRate: number): string
   const bytes = new Uint8Array(pcm.buffer); let binary = '';
   for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return btoa(binary);
+}
+
+export function encodeLivePCM(input: Float32Array, originalRate: number): string {
+  return encodePCM(input, originalRate, 24000);
+}
+
+export function encodeGooglePCM(input: Float32Array, originalRate: number): string {
+  return encodePCM(input, originalRate, 16000);
 }

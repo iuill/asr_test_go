@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { AutoSaveSession } from '../src/autosave-session.ts';
 import { TranscriptStore } from '../src/transcript-store.ts';
-import { encodeWav, encodeLivePCM } from '../src/audio-encoding.ts';
+import { encodeWav, encodeLivePCM, encodeGooglePCM } from '../src/audio-encoding.ts';
 
 test('stopping during save initialization closes after the final snapshot', async () => {
   const calls = [];
@@ -65,6 +65,9 @@ test('audio encoders retain expected sample rates, PCM format and duration', () 
   const live = Buffer.from(encodeLivePCM(input, 48000), 'base64');
   assert.equal(live.length, 48000);
   assert.equal(live.readInt16LE(0), 16383);
+  const google = Buffer.from(encodeGooglePCM(input, 48000), 'base64');
+  assert.equal(google.length, 32000);
+  assert.equal(google.readInt16LE(0), 16383);
 });
 
 test('failed initialization does not save into a previous recording', async () => {
