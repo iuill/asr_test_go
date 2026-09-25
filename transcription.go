@@ -206,7 +206,7 @@ func (a *App) google(ctx context.Context, cfg Config, chirp3 bool, audio []byte)
 		if location != "us" && location != "eu" {
 			return Transcript{}, errors.New("Chirp 3 のlocationは us または eu にしてください")
 		}
-		endpoint = fmt.Sprintf("https://speech.googleapis.com/v2/projects/%s/locations/%s/recognizers/_:recognize", url.PathEscape(g.ProjectID), location)
+		endpoint = fmt.Sprintf("https://%s-speech.googleapis.com/v2/projects/%s/locations/%s/recognizers/_:recognize", location, url.PathEscape(g.ProjectID), location)
 		payload = map[string]any{"config": map[string]any{"autoDecodingConfig": map[string]any{}, "model": "chirp_3", "languageCodes": []string{cfg.Language}}, "content": base64.StdEncoding.EncodeToString(audio)}
 	} else {
 		endpoint = "https://speech.googleapis.com/v1/speech:recognize"

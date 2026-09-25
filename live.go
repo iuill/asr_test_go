@@ -240,6 +240,7 @@ func (a *App) readLive(session *liveSession) {
 		case "error":
 			a.debug.logf("ERROR", "live server error type=%s code=%s", safeLogCode(envelope.Error.Type), safeLogCode(envelope.Error.Code))
 			a.emitLive(liveEvent{Type: "error", Message: envelope.Error.Message})
+			session.finishPending()
 		}
 	}
 }
