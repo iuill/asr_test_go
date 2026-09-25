@@ -11,7 +11,7 @@ import { EventsOn } from '../wailsjs/runtime/runtime';
 type Info = main.AppInfo;
 const root = document.querySelector<HTMLDivElement>('#app')!;
 root.innerHTML = `
-  <header><div class="brand"><img src="${appIcon}" alt=""><h1>ASR Studio</h1></div><span id="version" class="badge">v0.0.1</span></header>
+  <header><div class="brand"><img src="${appIcon}" alt=""><h1>ASR Studio</h1></div><span id="version" class="badge">v0.0.2</span></header>
   <main>
     <section class="panel intro"><div><h2>マイクから文字起こし</h2><p>GPT LiveとGoogle V1は発話中に途中結果を表示します。Chirp 3は途中結果が返った場合に表示します。OpenAI GPT TranscribeとAzureは発話後に送信します。APIの利用料金が発生します。</p></div></section>
     <section class="panel"><div class="section-head"><h2>入力マイク</h2><button id="refreshMics" class="quiet">マイク一覧を更新</button></div><div class="mic-row"><div class="mic-control"><select id="microphone" aria-label="入力マイク"><option value="">システム既定のマイク</option></select><span id="activeMic" class="hint">録音開始後に使用マイクを表示します</span></div></div><label class="mic-mode"><input id="distantVoices" type="checkbox"> 離れた声を拾う <span class="hint">周囲の音も拾いやすくなります</span></label></section>

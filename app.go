@@ -32,7 +32,7 @@ type AppInfo struct {
 	Error          string  `json:"error,omitempty"`
 }
 
-var appVersion = "0.0.1"
+var appVersion = "0.0.2"
 
 type Transcript struct {
 	Text string `json:"text"`

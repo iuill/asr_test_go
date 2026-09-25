@@ -57,4 +57,4 @@ go test ./...
 
 Windows版の出力は `build/bin/asr_test_go.exe` です。Goの公開メソッドを変更した場合は `./scripts/generate-bindings.sh` でフロントエンドのバインディングを更新してください。
 
-[Windows release workflow](.github/workflows/release.yml) は `v0.0.1` のような `v*` タグをpushしたときにReleaseを作成し、EXEとZIPを添付します。PRのマージだけでは起動しません。Actions画面から手動実行した場合はArtifactのみ作成します。
+[Windows release workflow](.github/workflows/release.yml) は `v0.0.2` のような `v*` タグをpushしたときにReleaseを作成し、EXEとZIPを添付します。PRのマージだけでは起動しません。Actions画面から手動実行した場合はArtifactのみ作成します。

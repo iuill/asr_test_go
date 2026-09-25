@@ -35,7 +35,7 @@ jobs:
       - name: Build Windows EXE
         shell: pwsh
         run: |
-          $version = '0.0.1'
+          $version = '0.0.2'
           if ('${{ github.ref_type }}' -eq 'tag') { $version = '${{ github.ref_name }}'.TrimStart('v') }
           wails build -platform windows/amd64 -skipbindings -webview2 error -o asr_test_go.exe -ldflags "-X main.appVersion=$version"
       - name: Package EXE and configuration template
