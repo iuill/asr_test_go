@@ -1,11 +1,13 @@
+import type { main } from '../wailsjs/go/models';
+import { AutoSaveSession } from './autosave-session';
+import { TranscriptStore, formatEntry } from './transcript-store';
+import { encodeWav, encodeLivePCM } from './audio-encoding';
 import './style.css';
 import appIcon from './assets/app-icon.svg';
 import { AppendLive, BeginAutoSave, CommitLive, EndAutoSave, GetInfo, LogDiagnostic, SaveTranscript, SetAutoSave, SetDebugLogging, SetShowTimestamps, StartLive, StopLive, Transcribe, WriteAutoSave } from '../wailsjs/go/main/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 
-type Model = { id: string; name: string; provider: string; available: boolean; reason?: string };
-type Info = { version: string; configPath: string; models: Model[]; debugLogging: boolean; showTimestamps: boolean; autoSave: boolean; autoSaveDir: string; logPath: string; logError?: string; error?: string };
-type TranscriptEntry = { text: string; at: number };
+type Info = main.AppInfo;
 const root = document.querySelector<HTMLDivElement>('#app')!;
 root.innerHTML = `
   <header><div class="brand"><img src="${appIcon}" alt=""><h1>ASR Studio</h1></div><span id="version" class="badge">v0.0.1</span></header>
@@ -40,14 +42,15 @@ let liveQueue: Promise<void> = Promise.resolve();
 let liveActive = false;
 let liveFailed = false;
 let liveRotationTimer: number | null = null;
-let autoSavePath = '';
-let autoSaveQueue: Promise<void> = Promise.resolve();
-let autoSaveFinishing = false;
-let recording = false;
-let stopping = false;
+type RecordingPhase = 'idle' | 'starting' | 'recording' | 'stopping';
+let phase: RecordingPhase = 'idle';
 const selected = new Set<string>();
-const histories = new Map<string, TranscriptEntry[]>();
-const autoHistories = new Map<string, TranscriptEntry[]>();
+const transcripts = new TranscriptStore();
+const autoSave = new AutoSaveSession({ begin: BeginAutoSave, write: WriteAutoSave, end: EndAutoSave }, event => {
+  if (event.type === 'error') setAutoSaveStatus(`自動保存エラー: ${String(event.error)}`);
+  else if (event.type === 'started') setAutoSaveStatus(`保存先: transcripts/${event.path.split(/[\\/]/).pop()}`);
+  else setAutoSaveStatus(`自動保存済み ${new Date().toLocaleTimeString()} · ${event.path.split(/[\\/]/).pop()}`);
+});
 const livePartial = new Map<string, string>();
 const highlightUntil = new Map<string, number>();
 
@@ -72,7 +75,7 @@ function showTranscript(id: string, highlightNew = false, emptyMessage = '結果
   const target = document.getElementById(`text-${id}`);
   if (!target) return;
   const followTail = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
-  const entries = histories.get(id) || [];
+  const entries = transcripts.entries(id);
   const partial = id === 'gpt-live-transcribe' ? Array.from(livePartial.values()).join(' ') : '';
   if (highlightNew) {
     const until = Date.now() + 3000;
@@ -86,7 +89,7 @@ function showTranscript(id: string, highlightNew = false, emptyMessage = '結果
   const lines = entries.map((entry, index) => {
     const line = document.createElement('div');
     line.className = 'transcript-line' + (highlightUntil.has(id) && index === entries.length - 1 ? ' transcript-line-new' : '');
-    line.textContent = formatEntry(entry);
+    line.textContent = formatEntry(entry, info.showTimestamps);
     return line;
   });
   if (partial) lines.push(createPartialLine(partial));
@@ -123,29 +126,14 @@ function showLivePartial() {
   if (followTail) target.scrollTop = target.scrollHeight;
 }
 
-function formatEntry(entry: TranscriptEntry): string {
-  if (!info?.showTimestamps) return entry.text;
-  const at = new Date(entry.at);
-  const hh = String(at.getHours()).padStart(2, '0');
-  const mm = String(at.getMinutes()).padStart(2, '0');
-  return `[${hh}:${mm}] ${entry.text}`;
-}
-
-function formatEntries(entries: TranscriptEntry[]): string {
-  return entries.map(formatEntry).join('\n');
-}
-
 function transcriptContent(currentRecordingOnly = false): string {
-  return info.models.map(model => {
-    const entries = (currentRecordingOnly ? autoHistories : histories).get(model.id) || [];
-    return entries.length ? `${model.name}\n${formatEntries(entries)}` : '';
-  }).filter(Boolean).join('\n\n');
+  return transcripts.content(info.models, info.showTimestamps, currentRecordingOnly);
 }
 
 function setAutoSaveStatus(message: string) {
   $('autoSaveStatus').textContent = message;
   const error = message.includes('エラー') || message.includes('できません');
-  $('autoSaveStatus').title = error ? message : autoSavePath || info.autoSaveDir;
+  $('autoSaveStatus').title = error ? message : autoSave.path || info.autoSaveDir;
   $('autoSaveStatus').classList.toggle('error', error);
 }
 
@@ -156,47 +144,18 @@ function setLogStatus(message: string, error = false) {
 }
 
 async function beginAutoSave() {
-  if (!info.autoSave || autoSavePath) return;
-  try {
-    autoSavePath = await BeginAutoSave();
-    setAutoSaveStatus(`保存先: transcripts/${autoSavePath.split(/[\\/]/).pop()}`);
-    if (autoHistories.size) void queueAutoSave();
-  } catch (error) {
-    setAutoSaveStatus(`自動保存を開始できません: ${String(error)}`);
-  }
+  if (!info.autoSave) return;
+  await autoSave.begin();
+  await autoSave.write(() => transcriptContent(true));
 }
 
-function queueAutoSave(final = false): Promise<void> {
-  if (!autoSavePath) return autoSaveQueue;
-  autoSaveQueue = autoSaveQueue.then(async () => {
-    const content = transcriptContent(true);
-    const path = final ? await EndAutoSave(content) : await WriteAutoSave(content);
-    if (final) autoSavePath = '';
-    setAutoSaveStatus(`自動保存済み ${new Date().toLocaleTimeString()} · ${path.split(/[\\/]/).pop()}`);
-  }).catch(error => {
-    if (final) autoSavePath = '';
-    setAutoSaveStatus(`自動保存エラー: ${String(error)}`);
-  });
-  return autoSaveQueue;
-}
-
-async function finishAutoSave() {
-  autoSaveFinishing = true;
-  await queueAutoSave(true);
-  autoSaveFinishing = false;
+function finishAutoSave(): Promise<void> {
+  return autoSave.end(() => transcriptContent(true));
 }
 
 function addTranscript(id: string, text: string) {
-  let entries = histories.get(id);
-  if (!entries) { entries = []; histories.set(id, entries); }
-  const entry = { text, at: Date.now() };
-  entries.push(entry);
-  if (recording || stopping) {
-    let saved = autoHistories.get(id);
-    if (!saved) { saved = []; autoHistories.set(id, saved); }
-    saved.push(entry);
-  }
-  if (autoSavePath && !autoSaveFinishing) void queueAutoSave();
+  transcripts.append(id, text);
+  void autoSave.write(() => transcriptContent(true));
 }
 
 function flashResult(id: string) {
@@ -258,7 +217,7 @@ function renderModels() {
     const label = document.createElement('label');
     label.className = 'model' + (model.available ? '' : ' unavailable');
     const box = document.createElement('input');
-    box.type = 'checkbox'; box.disabled = !model.available || recording; box.checked = selected.has(model.id);
+    box.type = 'checkbox'; box.disabled = !model.available || phase !== 'idle'; box.checked = selected.has(model.id);
     box.addEventListener('change', () => { if (box.checked) selected.add(model.id); else selected.delete(model.id); renderModels(); renderResults(); });
     const copy = document.createElement('span');
     const strong = document.createElement('strong'); strong.textContent = model.name;
@@ -323,48 +282,19 @@ function renderResults() {
   for (const id of selected) showTranscript(id);
 }
 async function reload() {
-  info = await GetInfo() as Info;
+  if (phase !== 'idle') return;
+  const loaded = await GetInfo();
+  if (phase !== 'idle') return;
+  info = loaded;
   $('version').textContent = `v${info.version}`;
   ($('showTimestamps') as HTMLInputElement).checked = info.showTimestamps;
   ($('autoSave') as HTMLInputElement).checked = info.autoSave;
-  if (!autoSavePath) setAutoSaveStatus(info.autoSave ? '保存先: transcripts/' : '');
+  if (!autoSave.path) setAutoSaveStatus(info.autoSave ? '保存先: transcripts/' : '');
   ($('debugLogging') as HTMLInputElement).checked = info.debugLogging;
   setLogStatus(info.logError ? `画面設定エラー: ${info.logError}` : info.debugLogging ? '保存先: logs/asr-studio.log' : '', Boolean(info.logError));
   for (const id of Array.from(selected)) if (!info.models.find(m => m.id === id && m.available)) selected.delete(id);
   if (!selected.size) { const first = info.models.find(m => m.available); if (first) selected.add(first.id); }
   renderModels(); renderResults();
-}
-function encodeWav(input: Float32Array, originalRate: number): string {
-  const targetRate = 16000;
-  const count = Math.floor(input.length * targetRate / originalRate);
-  const wav = new ArrayBuffer(44 + count * 2);
-  const view = new DataView(wav);
-  const ascii = (offset: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i)); };
-  ascii(0, 'RIFF'); view.setUint32(4, wav.byteLength - 8, true); ascii(8, 'WAVE'); ascii(12, 'fmt ');
-  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
-  view.setUint32(24, targetRate, true); view.setUint32(28, targetRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
-  ascii(36, 'data'); view.setUint32(40, count * 2, true);
-  for (let i = 0; i < count; i++) {
-    const pos = i * originalRate / targetRate;
-    const low = Math.floor(pos), frac = pos - low;
-    const value = Math.max(-1, Math.min(1, (input[low] || 0) * (1 - frac) + (input[low + 1] || 0) * frac));
-    view.setInt16(44 + i * 2, value < 0 ? value * 32768 : value * 32767, true);
-  }
-  const bytes = new Uint8Array(wav); let binary = '';
-  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  return btoa(binary);
-}
-function encodeLivePCM(input: Float32Array, originalRate: number): string {
-  const rate = 24000, count = Math.floor(input.length * rate / originalRate);
-  const pcm = new Int16Array(count);
-  for (let i = 0; i < count; i++) {
-    const pos = i * originalRate / rate, low = Math.floor(pos), frac = pos - low;
-    const value = Math.max(-1, Math.min(1, (input[low] || 0) * (1 - frac) + (input[low + 1] || 0) * frac));
-    pcm[i] = value < 0 ? value * 32768 : value * 32767;
-  }
-  const bytes = new Uint8Array(pcm.buffer); let binary = '';
-  for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  return btoa(binary);
 }
 function queueLiveFrame(frame: Float32Array) {
   if (!liveActive || liveFailed || !context) return;
@@ -382,7 +312,7 @@ function queueLiveCommit() {
   });
 }
 function rotateLiveConnection() {
-  if (!recording || stopping || !liveActive || liveFailed) return;
+  if (phase !== 'recording' || !liveActive || liveFailed) return;
   // Realtime sessions end after 60 minutes. Finish the current turn before reconnecting.
   flush();
   const state = document.getElementById('state-gpt-live-transcribe');
@@ -421,17 +351,22 @@ function flush() {
   }
 }
 async function start() {
+  if (phase !== 'idle') return;
   if (!selected.size) { $('status').textContent = 'モデルを選択してください'; return; }
+  setRecordingPhase('starting');
   try {
-    autoHistories.clear();
+    transcripts.beginRecording();
+    livePartial.clear();
     const deviceId = ($('microphone') as HTMLSelectElement).value;
     stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, echoCancellation: true, noiseSuppression: true }, video: false });
     void LogDiagnostic('microphone_started');
     const track = stream.getAudioTracks()[0];
     $('activeMic').textContent = `使用中: ${track.label || '名称不明のマイク'}`;
-    track.addEventListener('ended', () => { if (!stopping) void stop(); });
     await refreshMicrophones(false);
     if (selected.has('gpt-live-transcribe')) { await StartLive(); liveActive = true; liveFailed = false; liveQueue = Promise.resolve(); }
+    await beginAutoSave();
+    if (track.readyState === 'ended') throw new Error('マイクが切断されました');
+    track.addEventListener('ended', () => { if (phase === 'recording') void stop(); });
     context = new AudioContext(); source = context.createMediaStreamSource(stream);
     analyser = context.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.72;
     silentGain = context.createGain(); silentGain.gain.value = 0;
@@ -450,42 +385,53 @@ async function start() {
       }
     };
     source.connect(processor); processor.connect(context.destination);
-    recording = true; renderModels(); ($('microphone') as HTMLSelectElement).disabled = true;
+    setRecordingPhase('recording');
     if (liveActive) liveRotationTimer = window.setInterval(rotateLiveConnection, 50 * 60 * 1000);
     ($('modelsPanel') as HTMLDetailsElement).open = false;
     document.body.classList.add('recording');
-    ($('start') as HTMLButtonElement).disabled = true; ($('stop') as HTMLButtonElement).disabled = false;
     $('status').textContent = '録音中';
-    await beginAutoSave();
   } catch (error) { void LogDiagnostic('microphone_error'); await stop(); $('status').textContent = `録音を開始できません: ${String(error)}`; }
 }
+function setRecordingPhase(next: RecordingPhase) {
+  phase = next;
+  ($('start') as HTMLButtonElement).disabled = next !== 'idle';
+  ($('stop') as HTMLButtonElement).disabled = next !== 'recording';
+  ($('microphone') as HTMLSelectElement).disabled = next !== 'idle';
+  ($('reload') as HTMLButtonElement).disabled = next !== 'idle';
+  ($('autoSave') as HTMLInputElement).disabled = next === 'starting' || next === 'stopping';
+  renderModels();
+}
+
 async function stop() {
-  if (stopping) return;
-  stopping = true;
-  ($('autoSave') as HTMLInputElement).disabled = true;
+  if (phase === 'idle' || phase === 'stopping') return;
+  void LogDiagnostic('microphone_stopped');
+  setRecordingPhase('stopping');
+  $('status').textContent = '残りの文字起こしを処理中…';
+  const errors: string[] = [];
   if (liveRotationTimer !== null) { window.clearInterval(liveRotationTimer); liveRotationTimer = null; }
-  if (recording) void LogDiagnostic('microphone_stopped');
-  flush(); processor?.disconnect(); source?.disconnect(); analyser?.disconnect(); silentGain?.disconnect(); stream?.getTracks().forEach(track => track.stop());
+  flush();
+  if (processor) processor.onaudioprocess = null;
+  processor?.disconnect(); source?.disconnect(); analyser?.disconnect(); silentGain?.disconnect();
+  stream?.getTracks().forEach(track => track.stop());
   cancelAnimationFrame(animationFrame); analyser = null; silentGain = null; drawSpectrum();
-  await context?.close(); context = null; processor = null; source = null; stream = null;
+  try { await context?.close(); } catch (error) { errors.push(String(error)); }
+  context = null; processor = null; source = null; stream = null;
   if (liveActive) {
     await liveQueue;
-    try { await StopLive(); } catch (error) { $('status').textContent = `Live停止エラー: ${String(error)}`; }
+    try { await StopLive(); } catch (error) { errors.push(`Live停止エラー: ${String(error)}`); }
     liveActive = false;
   }
-  if (autoSavePath) {
-    $('status').textContent = '残りの文字起こしを処理して保存中…';
-    await Promise.allSettled(Array.from(requestChains.values()));
-    await finishAutoSave();
-  }
-  recording = false; renderModels(); ($('microphone') as HTMLSelectElement).disabled = false;
+  // Drain every recording, even with autosave off, before allowing the next one.
+  await Promise.allSettled(Array.from(requestChains.values()));
+  requestChains.clear();
+  await finishAutoSave();
+  livePartial.clear();
+  if (selected.has('gpt-live-transcribe')) showTranscript('gpt-live-transcribe');
+  setRecordingPhase('idle');
   ($('modelsPanel') as HTMLDetailsElement).open = true;
   document.body.classList.remove('recording');
-  ($('start') as HTMLButtonElement).disabled = false; ($('stop') as HTMLButtonElement).disabled = true;
-  $('status').textContent = '停止';
+  $('status').textContent = errors.length ? errors.join(' / ') : '停止';
   $('activeMic').textContent = '録音停止中';
-  ($('autoSave') as HTMLInputElement).disabled = false;
-  stopping = false;
 }
 $('microphone').addEventListener('change', () => localStorage.setItem('asr-microphone-id', ($('microphone') as HTMLSelectElement).value));
 $('refreshMics').addEventListener('click', () => refreshMicrophones(true).catch(error => $('activeMic').textContent = `マイク一覧を取得できません: ${String(error)}`));
@@ -496,9 +442,13 @@ $('reload').addEventListener('click', () => { reload().catch(error => $('status'
 $('debugLogging').addEventListener('change', async () => {
   const toggle = $('debugLogging') as HTMLInputElement;
   toggle.disabled = true;
-  try { await SetDebugLogging(toggle.checked); }
+  try {
+    await SetDebugLogging(toggle.checked);
+    info.debugLogging = toggle.checked;
+    setLogStatus(toggle.checked ? '保存先: logs/asr-studio.log' : '');
+  }
   catch (error) { setLogStatus(`ログ設定エラー: ${String(error)}`, true); }
-  finally { await reload().catch(error => setLogStatus(String(error), true)); toggle.disabled = false; }
+  finally { toggle.checked = info.debugLogging; toggle.disabled = false; }
 });
 $('showTimestamps').addEventListener('change', async () => {
   const toggle = $('showTimestamps') as HTMLInputElement;
@@ -518,18 +468,17 @@ $('autoSave').addEventListener('change', async () => {
   try {
     await SetAutoSave(toggle.checked);
     info.autoSave = toggle.checked;
-    if (recording && toggle.checked) await beginAutoSave();
+    if (phase === 'recording' && toggle.checked) await beginAutoSave();
     if (!toggle.checked) {
       await finishAutoSave();
-      if (!autoSavePath) setAutoSaveStatus('');
     }
   } catch (error) {
     toggle.checked = info.autoSave;
     setAutoSaveStatus(`自動保存設定エラー: ${String(error)}`);
-  } finally { toggle.disabled = false; }
+  } finally { toggle.disabled = phase === 'starting' || phase === 'stopping'; }
 });
 $('start').addEventListener('click', start); $('stop').addEventListener('click', stop);
-$('clear').addEventListener('click', () => { histories.clear(); livePartial.clear(); renderResults(); });
+$('clear').addEventListener('click', () => { transcripts.clearDisplay(); livePartial.clear(); renderResults(); });
 $('save').addEventListener('click', async () => {
   const content = transcriptContent();
   if (!content) { $('status').textContent = '保存する結果がありません'; return; }

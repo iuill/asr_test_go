@@ -28,6 +28,8 @@ jobs:
         run: npm ci --prefix frontend
       - name: Verify frontend
         run: npm run build --prefix frontend
+      - name: Test frontend
+        run: npm test --prefix frontend
       - name: Test Go
         run: go test ./...
       - name: Build Windows EXE

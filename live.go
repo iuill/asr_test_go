@@ -196,6 +196,7 @@ func (a *App) shutdown(context.Context) {
 
 func (a *App) readLive(session *liveSession) {
 	defer close(session.readDone)
+	defer session.conn.Close()
 	for {
 		_, data, err := session.conn.ReadMessage()
 		if err != nil {

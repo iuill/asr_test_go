@@ -42,44 +42,28 @@ func (a *App) beginAutoSaveAt(dir string) (string, error) {
 }
 
 func (a *App) WriteAutoSave(content string) (string, error) {
+	a.autoMu.Lock()
+	defer a.autoMu.Unlock()
+	return a.writeAutoSaveLocked(content)
+}
+
+func (a *App) writeAutoSaveLocked(content string) (string, error) {
 	if len(content) > maxTranscriptSize {
 		return "", errors.New("保存するテキストが大きすぎます")
 	}
-	a.autoMu.Lock()
-	defer a.autoMu.Unlock()
 	if a.autoPath == "" {
 		return "", errors.New("自動保存が開始されていません")
 	}
-	if err := writeTranscriptAtomically(a.autoPath, []byte(content)); err != nil {
+	if err := writeFileAtomically(a.autoPath, []byte(content)); err != nil {
 		return "", fmt.Errorf("文字起こしを自動保存できません: %w", err)
 	}
 	return a.autoPath, nil
 }
 
 func (a *App) EndAutoSave(content string) (string, error) {
-	path, err := a.WriteAutoSave(content)
 	a.autoMu.Lock()
+	defer a.autoMu.Unlock()
+	path, err := a.writeAutoSaveLocked(content)
 	a.autoPath = ""
-	a.autoMu.Unlock()
 	return path, err
-}
-
-func writeTranscriptAtomically(path string, data []byte) error {
-	file, err := os.CreateTemp(filepath.Dir(path), ".asr-transcript-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(file.Name())
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	return os.Rename(file.Name(), path)
 }

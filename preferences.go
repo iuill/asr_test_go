@@ -60,7 +60,7 @@ func savePreferences(path string, pref appPreferences) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
+	if err := writeFileAtomically(path, append(data, '\n')); err != nil {
 		return fmt.Errorf("画面設定を保存できません: %w", err)
 	}
 	return nil

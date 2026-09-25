@@ -71,11 +71,14 @@ Dev Containerでは Go 1.27.1、Node.js 26、Wails CLI v2.16.0、MinGW を使用
 npm ci --prefix frontend
 ./scripts/generate-bindings.sh
 npm run build --prefix frontend
+npm test --prefix frontend
 go test ./...
 ./scripts/build-windows.sh
 ```
 
 出力は `build/bin/asr_test_go.exe` です。初回ビルド時には同じフォルダに設定テンプレートもコピーします。生成済みの `frontend/wailsjs` をGitで管理するため、Goの公開メソッドを変更したら `generate-bindings.sh` を再実行してください。
+
+設定の読込・検証は `config.go`、クラウドへの発話送信は `transcription.go`、Live接続は `live.go` に分けています。ファイル保存は `persistence.go` に集約しています。フロントエンドの音声変換、履歴管理、自動保存の順序制御はそれぞれ `audio-encoding.ts`、`transcript-store.ts`、`autosave-session.ts` に置き、画面や実際のAPI接続なしでテストできます。録音停止時は、自動保存のON/OFFに関わらず処理中の認識を待ってから次の録音を受け付けます。
 
 ## GitHub Releases
 
