@@ -5,7 +5,7 @@ import { encodeWav, encodeLivePCM, encodeGooglePCM } from './audio-encoding';
 import { microphoneConstraints, SpeechSegmenter, type CaptureMode } from './speech-segmenter';
 import './style.css';
 import appIcon from './assets/app-icon.svg';
-import { AppendGoogleStream, AppendLive, BeginAutoSave, CommitLive, EndAutoSave, EndGoogleStream, GetInfo, LogDiagnostic, SaveTranscript, SetAutoSave, SetDebugLogging, SetShowTimestamps, StartGoogleStream, StartLive, StopLive, Transcribe, WriteAutoSave } from '../wailsjs/go/main/App';
+import { AppendAutoSave, AppendGoogleStream, AppendLive, BeginAutoSave, CommitLive, EndAutoSave, EndGoogleStream, GetInfo, LogDiagnostic, SaveTranscript, SetAutoSave, SetDebugLogging, SetShowTimestamps, StartGoogleStream, StartLive, StopLive, Transcribe } from '../wailsjs/go/main/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
 
 type Info = main.AppInfo;
@@ -55,7 +55,7 @@ type RecordingPhase = 'idle' | 'starting' | 'recording' | 'stopping';
 let phase: RecordingPhase = 'idle';
 const selected = new Set<string>();
 const transcripts = new TranscriptStore();
-const autoSave = new AutoSaveSession({ begin: BeginAutoSave, write: WriteAutoSave, end: EndAutoSave }, event => {
+const autoSave = new AutoSaveSession({ begin: BeginAutoSave, append: AppendAutoSave, end: EndAutoSave }, event => {
   if (event.type === 'error') setAutoSaveStatus(`自動保存エラー: ${String(event.error)}`);
   else if (event.type === 'started') setAutoSaveStatus(`保存先: transcripts/${event.path.split(/[\\/]/).pop()}`);
   else setAutoSaveStatus(`自動保存済み ${new Date().toLocaleTimeString()} · ${event.path.split(/[\\/]/).pop()}`);
@@ -156,17 +156,19 @@ function setLogStatus(message: string, error = false) {
 
 async function beginAutoSave() {
   if (!info.autoSave) return;
-  await autoSave.begin();
-  await autoSave.write(() => transcriptContent(true));
+  const earlier = info.models.flatMap(model => transcripts.sessionEntries(model.id).map(entry => ({ modelID: model.id, text: formatEntry(entry, info.showTimestamps) })));
+  const started = autoSave.begin();
+  for (const entry of earlier) void autoSave.append(entry.modelID, entry.text);
+  await started;
 }
 
 function finishAutoSave(): Promise<void> {
-  return autoSave.end(() => transcriptContent(true));
+  return autoSave.end();
 }
 
 function addTranscript(id: string, text: string) {
-  transcripts.append(id, text);
-  void autoSave.write(() => transcriptContent(true));
+  const entry = transcripts.append(id, text);
+  void autoSave.append(id, formatEntry(entry, info.showTimestamps));
 }
 
 function flashResult(id: string) {

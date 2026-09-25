@@ -10,60 +10,74 @@ import (
 
 const maxTranscriptSize = 10 * 1024 * 1024
 
-// BeginAutoSave creates one file for the current recording. Each new recording
-// gets a distinct name so an earlier transcript is never overwritten.
+var autoSaveModels = map[string]bool{
+	"gpt-transcribe": true, "gpt-live-transcribe": true,
+	"azure-speech": true, "azure-speech-diarize": true,
+	"google-v1": true, "google-chirp-3": true,
+}
+
+// Each recording has its own directory; a model file is created on its first result.
 func (a *App) BeginAutoSave() (string, error) {
 	configFile, err := configPath()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(filepath.Dir(configFile), "transcripts")
-	return a.beginAutoSaveAt(dir)
+	return a.beginAutoSaveAt(filepath.Join(filepath.Dir(configFile), "transcripts"))
 }
 
-func (a *App) beginAutoSaveAt(dir string) (string, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
+func (a *App) beginAutoSaveAt(root string) (string, error) {
+	a.autoMu.Lock()
+	defer a.autoMu.Unlock()
+	if a.autoDir != "" {
+		return a.autoDir, nil
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
 		return "", fmt.Errorf("自動保存フォルダを作成できません: %w", err)
 	}
-	a.autoMu.Lock()
-	defer a.autoMu.Unlock()
-	if a.autoPath != "" {
-		return a.autoPath, nil
-	}
-	file, err := os.CreateTemp(dir, "transcript-"+time.Now().Format("20060102-150405")+"-*.txt")
+	dir, err := os.MkdirTemp(root, "recording-"+time.Now().Format("20060102-150405")+"-*")
 	if err != nil {
-		return "", fmt.Errorf("自動保存ファイルを作成できません: %w", err)
+		return "", fmt.Errorf("自動保存フォルダを作成できません: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		return "", err
-	}
-	a.autoPath = file.Name()
-	return a.autoPath, nil
+	a.autoDir = dir
+	return dir, nil
 }
 
-func (a *App) WriteAutoSave(content string) (string, error) {
+func (a *App) AppendAutoSave(modelID, text string) (string, error) {
 	a.autoMu.Lock()
 	defer a.autoMu.Unlock()
-	return a.writeAutoSaveLocked(content)
-}
-
-func (a *App) writeAutoSaveLocked(content string) (string, error) {
-	if len(content) > maxTranscriptSize {
-		return "", errors.New("保存するテキストが大きすぎます")
-	}
-	if a.autoPath == "" {
+	if a.autoDir == "" {
 		return "", errors.New("自動保存が開始されていません")
 	}
-	if err := writeFileAtomically(a.autoPath, []byte(content)); err != nil {
+	if !autoSaveModels[modelID] {
+		return "", errors.New("自動保存モデルが不正です")
+	}
+	if text == "" {
+		return "", errors.New("空の文字起こし結果は保存できません")
+	}
+	path := filepath.Join(a.autoDir, modelID+".txt")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
 		return "", fmt.Errorf("文字起こしを自動保存できません: %w", err)
 	}
-	return a.autoPath, nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	line := []byte(text + "\n")
+	if info.Size()+int64(len(line)) > maxTranscriptSize {
+		return "", errors.New("保存するテキストが大きすぎます")
+	}
+	if _, err := file.Write(line); err != nil {
+		return "", fmt.Errorf("文字起こしを自動保存できません: %w", err)
+	}
+	return path, nil
 }
 
-func (a *App) EndAutoSave(content string) (string, error) {
+func (a *App) EndAutoSave() (string, error) {
 	a.autoMu.Lock()
 	defer a.autoMu.Unlock()
-	path, err := a.writeAutoSaveLocked(content)
-	a.autoPath = ""
-	return path, err
+	dir := a.autoDir
+	a.autoDir = ""
+	return dir, nil
 }

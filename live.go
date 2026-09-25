@@ -184,7 +184,7 @@ func (a *App) StopLive() error {
 }
 
 func (a *App) shutdown(context.Context) {
-	a.debug.logf("INFO", "app stopped")
+	a.debug.logf("INFO", "========== APP STOPPING ==========")
 	a.googleMu.Lock()
 	googleSessions := a.googleStreams
 	a.googleStreams = nil

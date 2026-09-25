@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -46,7 +47,7 @@ type App struct {
 	googleMu      sync.Mutex
 	googleStreams map[string]*googleStreamSession
 	autoMu        sync.Mutex
-	autoPath      string
+	autoDir       string
 }
 
 func NewApp() *App { return &App{client: &http.Client{Timeout: 90 * time.Second}} }
@@ -54,7 +55,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	if pref, path, err := loadPreferences(); err == nil {
 		a.debug.configure(pref.Enabled, path)
-		a.debug.logf("INFO", "app started version=%s", appVersion)
+		a.debug.logf("INFO", "========== APP START version=%s pid=%d ==========", appVersion, os.Getpid())
 	}
 }
 

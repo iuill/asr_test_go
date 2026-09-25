@@ -39,7 +39,7 @@ func (l *debugLogger) configure(enabled bool, configFile string) {
 	}
 	l.enabled = true
 	l.path = path
-	l.lastErr = l.writeLocked("INFO", "debug logging enabled")
+	l.lastErr = l.writeLocked("INFO", "========== DEBUG LOGGING ENABLED ==========")
 }
 
 func (l *debugLogger) status() (bool, string, error) {

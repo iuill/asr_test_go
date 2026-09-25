@@ -13,14 +13,16 @@ export class TranscriptStore {
   beginRecording(): void { this.session.clear(); }
   clearDisplay(): void { this.display.clear(); }
   entries(id: string): TranscriptEntry[] { return this.display.get(id) || []; }
+  sessionEntries(id: string): TranscriptEntry[] { return this.session.get(id) || []; }
 
-  append(id: string, text: string, at = Date.now()): void {
+  append(id: string, text: string, at = Date.now()): TranscriptEntry {
     const entry = { text, at };
     for (const store of [this.display, this.session]) {
       const entries = store.get(id) || [];
       entries.push(entry);
       store.set(id, entries);
     }
+    return entry;
   }
 
   content(models: { id: string; name: string }[], timestamps: boolean, sessionOnly = false): string {

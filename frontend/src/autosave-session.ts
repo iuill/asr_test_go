@@ -1,14 +1,14 @@
 type Backend = {
   begin: () => Promise<string>;
-  write: (content: string) => Promise<string>;
-  end: (content: string) => Promise<string>;
+  append: (modelID: string, text: string) => Promise<string>;
+  end: () => Promise<string>;
 };
 
 export type SaveEvent =
   | { type: 'started' | 'saved'; path: string }
   | { type: 'error'; error: unknown };
 
-// Begin, writes, and end share one queue, including while begin is still pending.
+// Begin, appends, and end share one queue, including while begin is still pending.
 export class AutoSaveSession {
   private queue: Promise<void> = Promise.resolve();
   private accepting = false;
@@ -32,21 +32,21 @@ export class AutoSaveSession {
     });
   }
 
-  write(content: () => string): Promise<void> {
+  append(modelID: string, text: string): Promise<void> {
     if (!this.accepting) return this.queue;
     return this.enqueue(async () => {
       if (!this.currentPath) return;
-      const path = await this.backend.write(content());
+      const path = await this.backend.append(modelID, text);
       this.notify({ type: 'saved', path });
     });
   }
 
-  end(content: () => string): Promise<void> {
+  end(): Promise<void> {
     this.accepting = false;
     return this.enqueue(async () => {
       if (!this.currentPath) return;
       try {
-        const path = await this.backend.end(content());
+        const path = await this.backend.end();
         this.notify({ type: 'saved', path });
       } finally {
         this.currentPath = '';

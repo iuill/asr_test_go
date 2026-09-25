@@ -4,40 +4,40 @@ import { AutoSaveSession } from '../src/autosave-session.ts';
 import { TranscriptStore } from '../src/transcript-store.ts';
 import { encodeWav, encodeLivePCM, encodeGooglePCM } from '../src/audio-encoding.ts';
 
-test('stopping during save initialization closes after the final snapshot', async () => {
+test('stopping during save initialization drains appends before closing', async () => {
   const calls = [];
   let release;
   const pending = new Promise(resolve => { release = resolve; });
   const session = new AutoSaveSession({
-    begin: async () => { calls.push('begin'); await pending; return 'one.txt'; },
-    write: async content => { calls.push(`write:${content}`); return 'one.txt'; },
-    end: async content => { calls.push(`end:${content}`); return 'one.txt'; },
+    begin: async () => { calls.push('begin'); await pending; return 'recording'; },
+    append: async (model, text) => { calls.push(`append:${model}:${text}`); return `${model}.txt`; },
+    end: async () => { calls.push('end'); return 'recording'; },
   }, () => {});
   const begin = session.begin();
-  session.write(() => 'first');
-  const end = session.end(() => 'final');
-  session.write(() => 'must not write after end');
+  session.append('google-v1', 'first');
+  const end = session.end();
+  session.append('google-v1', 'must not write after end');
   release();
   await Promise.all([begin, end]);
-  assert.deepEqual(calls, ['begin', 'write:first', 'end:final']);
+  assert.deepEqual(calls, ['begin', 'append:google-v1:first', 'end']);
   assert.equal(session.path, '');
 });
 
-test('a failed write does not prevent later snapshots or a new session', async () => {
+test('a failed append does not prevent later results or a new session', async () => {
   const events = [];
   let fail = true;
   let count = 0;
   const session = new AutoSaveSession({
-    begin: async () => `${++count}.txt`,
-    write: async () => { if (fail) { fail = false; throw new Error('disk full'); } return `${count}.txt`; },
-    end: async () => `${count}.txt`,
+    begin: async () => `recording-${++count}`,
+    append: async () => { if (fail) { fail = false; throw new Error('disk full'); } return `${count}.txt`; },
+    end: async () => `recording-${count}`,
   }, event => events.push(event.type));
   await session.begin();
-  await session.write(() => 'one');
-  await session.write(() => 'two');
-  await session.end(() => 'final');
+  await session.append('google-v1', 'one');
+  await session.append('google-v1', 'two');
+  await session.end();
   await session.begin();
-  assert.equal(session.path, '2.txt');
+  assert.equal(session.path, 'recording-2');
   assert.deepEqual(events, ['started', 'error', 'saved', 'saved', 'started']);
 });
 
@@ -74,15 +74,15 @@ test('failed initialization does not save into a previous recording', async () =
   let attempts = 0;
   const saved = [];
   const session = new AutoSaveSession({
-    begin: async () => { if (++attempts === 1) throw new Error('no access'); return 'new.txt'; },
-    write: async content => { saved.push(content); return 'new.txt'; },
-    end: async content => { saved.push(content); return 'new.txt'; },
+    begin: async () => { if (++attempts === 1) throw new Error('no access'); return 'new'; },
+    append: async (_model, text) => { saved.push(text); return 'new/google-v1.txt'; },
+    end: async () => 'new',
   }, () => {});
   await session.begin();
-  await session.write(() => 'failed recording');
-  await session.end(() => 'failed recording');
+  await session.append('google-v1', 'failed recording');
+  await session.end();
   await session.begin();
-  await session.write(() => 'new recording');
+  await session.append('google-v1', 'new recording');
   assert.deepEqual(saved, ['new recording']);
 });
 
