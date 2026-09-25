@@ -15,7 +15,7 @@ root.innerHTML = `
     <details id="modelsPanel" class="panel" open><summary><strong>モデル</strong><span id="modelSummary" class="hint"></span></summary><div class="model-detail"><div class="section-head"><span class="hint">利用するモデルを選択</span><button id="reload" class="quiet">設定を再読込</button></div><p id="configMessage" class="hint"></p><div id="models" class="models"></div></div></details>
     <div class="diagnostics" aria-label="表示と保存の設定">
       <div class="diagnostic-option"><label><input id="showTimestamps" type="checkbox"> 文字起こしに時刻を表示</label><span class="hint">結果と保存ファイルに反映</span></div>
-      <div class="diagnostic-option"><label><input id="autoSave" type="checkbox"> 結果ごとに自動保存</label><span id="autoSaveStatus" class="hint"></span></div>
+      <div class="diagnostic-option"><label><input id="autoSave" type="checkbox"> 文字起こし結果を自動保存</label><span id="autoSaveStatus" class="hint"></span></div>
       <div class="diagnostic-option"><label><input id="debugLogging" type="checkbox"> デバッグログを保存</label><span id="logStatus" class="hint"></span></div>
     </div>
     <section class="toolbar"><button id="start" class="primary">録音を開始</button><button id="stop" disabled>停止</button><canvas id="spectrum" class="spectrum" width="176" height="42" aria-label="マイク入力のスペクトル"></canvas><button id="clear" class="quiet">結果を消去</button><button id="save" class="quiet">テキスト保存</button><span id="status">待機中</span></section>
