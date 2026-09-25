@@ -1,87 +1,59 @@
-# ASR Studio（asr_test_go）
+# ASR Studio
 
-[asr_test_docker](https://github.com/iuill/asr_test_docker) のクラウド音声認識機能を Go + Wails v2 の Windows アプリに移したものです。マイクから発話を取り込み、選択した複数のモデルの結果を並べて比較できます。入力マイクは一覧から選択でき、録音中は実際に使用しているデバイス名を表示します。GPT LiveとGoogle V1は発話中に途中結果を表示します。Chirp 3も途中結果が返れば表示しますが、短い発話では確定結果だけになる場合があります。OpenAI GPT TranscribeとAzureは発話終了から約0.8秒の無音で区切り、長い発話は15秒で区切ります。結果はテキストとして保存できます。
+Windowsでマイク音声を文字起こしし、OpenAI・Azure・Googleの結果を並べて比較するアプリです。[asr_test_docker](https://github.com/iuill/asr_test_docker) のクラウド音声認識機能を Go + Wails に移植しました。ローカルモデルやDockerは不要です。
 
-GPT LiveはRealtime API、Google V1 / Chirp 3はgRPCでストリーミングします。Googleの接続は録音中維持し、約4分ごとに新しいストリームへ切り替えます。OpenAI GPT TranscribeとAzureは発話単位の同期APIを使います。途中結果は画面にだけ表示し、確定結果を履歴と自動保存に加えます。閲覧者向けセッション共有とログイン機能は含まれません。ローカルモデルやDockerは不要です。録音開始時にモデル一覧は自動で折りたたまれ、マイク入力のスペクトルを表示します。
+## 使い始める
 
-## 対応API
+1. [Releases](https://github.com/iuill/asr_test_go/releases) から `asr_test_go-windows-x64.zip` をダウンロードして展開します。ZIPにはEXEと設定テンプレートが入っています。
+2. `asr_test_go.exe` と同じフォルダの `appsettings.json` に、使うサービスの認証情報を設定します。設定項目は[設定例](appsettings.example.json)を参照してください。
+3. EXEを起動し、入力マイクとモデルを選んで「録音を開始」を押します。設定ファイルを起動後に編集した場合は「設定を再読込」を押してください。
 
-| プロバイダー | モデル/API |
+Windows 11、WebView2 Runtime、マイク権限、インターネット接続が必要です。クラウドAPIの利用料金が発生します。認証情報が空のモデルはグレー表示され、足りない項目がモデルの下に表示されます。
+
+## 認証情報の設定
+
+| サービス | `appsettings.json` に設定する項目 |
 | --- | --- |
-| OpenAI | `gpt-transcribe` / Audio Transcriptions API、`gpt-live-transcribe` / Realtime API |
-| Azure AI Speech | Fast Transcription REST API `2025-10-15`、話者識別オプション |
-| Google Cloud Speech-to-Text | V1、V2 `chirp_3` |
+| OpenAI | `openai.api_key`。通常は `openai.base_url` を変更する必要はありません。 |
+| Azure AI Speech | `azure_speech.api_key` とリソースの `azure_speech.endpoint`。 |
+| Google Speech-to-Text | `google.project_id`、`google.location`、`google.service_account`。 |
 
-APIの利用料金が発生します。インターネット接続と、利用するAPIの契約・有効化が必要です。Google Chirp 3 は `us` または `eu` のロケーションを使用します。
+`language` には `ja-JP` のような言語・地域コードを1つ設定します。Googleの `service_account` には、ダウンロードしたサービスアカウントJSONの**中身をJSONオブジェクトとして**貼り付けます。`credentials` フォルダにファイルを置くだけでは読み込まれません。GoogleではSpeech-to-Text APIの有効化、課金設定、必要なIAM権限も確認してください。Chirp 3の `location` は `us` または `eu` です。
 
-## Windowsで使う
+`appsettings.json` はGitの管理対象から除外しています。認証情報を入れたファイルやZIPは公開しないでください。
 
-GitHubの **Releases** から `asr_test_go-windows-x64.zip` をダウンロードして展開します。EXE単体もReleaseに添付されますが、ZIPには設定ファイルが含まれています。`asr_test_go.exe` と同じフォルダの `appsettings.json` を編集し、利用するサービスの認証情報を設定してください。アプリを開いて「設定を再読込」を押すと反映されます。空欄のサービスはモデル一覧で選択できず、モデルの下に不足する設定項目が表示されます。配布時の設定ファイルは認証情報が空なので、初回起動時はすべてのモデルが選択できません。
+## モデルと結果の表示
 
-設定例は [appsettings.example.json](appsettings.example.json) にあります。
+| モデル | 結果が表示されるタイミング |
+| --- | --- |
+| GPT Live Transcribe | 発話中に途中結果を表示。発話の区切りで確定します。 |
+| GPT Transcribe | 発話後に送信し、確定結果を表示します。 |
+| Google Speech-to-Text V1 / Chirp 3 | 録音中に音声を送り、APIから届いた途中結果と確定結果を表示します。短い発話では途中結果が出ない場合があります。 |
+| Azure AI Speech / 話者識別 | 発話後に送信し、確定結果を表示します。 |
 
-```json
-{
-  "language": "ja-JP",
-  "openai": {
-    "api_key": "sk-...",
-    "base_url": "https://api.openai.com/v1"
-  },
-  "azure_speech": {
-    "api_key": "...",
-    "endpoint": "https://YOUR-RESOURCE.cognitiveservices.azure.com"
-  },
-  "google": {
-    "project_id": "your-project-id",
-    "location": "us",
-    "service_account": {
-      "type": "service_account",
-      "project_id": "your-project-id",
-      "private_key_id": "...",
-      "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",
-      "client_email": "...@....iam.gserviceaccount.com",
-      "client_id": "...",
-      "token_uri": "https://oauth2.googleapis.com/token"
-    }
-  }
-}
-```
+途中結果は後から変わるため画面だけに表示し、確定結果を履歴と自動保存に加えます。GPT TranscribeとAzureは約0.8秒の無音か15秒の発話で音声を区切ります。Googleは録音中ストリームを維持し、約4分ごとに切り替えます。GPT Liveは長時間録音時に50分ごとに接続を更新します。
 
-Googleの `service_account` には、ダウンロードしたサービスアカウントJSON全体をオブジェクトとして貼り付けます。Speech-to-Text APIの権限と課金設定が必要です。`appsettings.json` はGit管理対象から除外しています。キーが入ったZIPを他人に渡さないでください。
+## 録音と保存
 
-Windows 11とWebView2 Runtimeが必要です。実機のマイク権限を許可してください。
+- 入力マイクは一覧から選べます。名前が表示されない場合は「マイク一覧を更新」を押してマイク権限を許可してください。
+- 遠くの声が抜ける場合は「離れた声を拾う」を録音開始前にONにできます。小さい音にも反応しますが、周囲の雑音やスピーカー音も拾いやすくなります。
+- 「文字起こしに時刻を表示」は画面とテキスト保存に反映されます。「文字起こし結果を自動保存」をONにすると、録音ごとに `transcripts/` へ保存します。「結果を消去」は画面表示だけを消し、自動保存済みの結果には影響しません。
+- 「デバッグログを保存」をONにすると `logs/asr-studio.log` に動作状況とAPIエラーを記録します。エラー応答は認証情報などを伏せ、1件4KBまでに制限します。APIが返したプロジェクトIDなどの診断情報は含まれます。
 
-マイクの名前が表示されない場合は「マイク一覧を更新」を押し、マイク使用を許可してください。選んだマイクは次回起動時にも復元されます。デバイスが取り外された場合はシステム既定に戻ります。`gpt-live-transcribe` は24 kHz PCMを発話中に送信し、発話が区切られるたびに確定結果を受け取ります。OpenAIの古い `gpt-4o-transcribe` 系は[2027年2月26日に廃止予定](https://developers.openai.com/api/docs/deprecations)のため、モデル一覧に含めていません。
-
-全指向性マイクなどで離れた声が抜ける場合は、入力マイクの「離れた声を拾う」を ON にして録音を開始できます。発話判定を小さい音にも反応する設定にし、発話直前の約0.3秒も含めて送信します。ブラウザのノイズ抑制とエコー除去も無効化するため、周囲の雑音やスピーカーの音も拾いやすくなります。切替はこのPCに記憶され、録音中は変更できません。機器や席の配置によって改善度は異なります。
-
-GPT LiveのRealtime接続はセッションの60分上限より前に、録音を続けたまま50分ごとに更新します。更新時は現在の発話を区切って確定させます。長時間の利用中は、API接続と自動保存のエラー表示を確認してください。
-
-`language` は必須です。`ja-JP` のような言語・地域コードを 1 つ指定してください。OpenAI には言語部分 (`ja`)、Azure と Google には `ja-JP` を送ります。`azure_speech.locale` と `google.locale` は使用しません。既存の設定ファイルから削除し、ルートの `language` に移してください。スペクトル表示は操作ボタンの「停止」と「結果を消去」の間にあります。
-
-画面の「デバッグログを保存」を ON にすると、EXE と同じフォルダの `logs/asr-studio.log` に動作状況と API エラーの応答本文を記録します。エラー本文は送信した認証情報や認証情報・音声データに相当する項目を伏せ、1 件あたり最大 4KB に制限します。プロジェクト ID など、API が返した診断情報は含まれます。各ファイルは最大 5MB で、現在のログと `.1`、`.2` の計 3 世代を保持します。OFF の間はログを書きません。選択状態は EXE 横の `asr-studio.preferences.json` に保存され、次回起動時にも引き継がれます。EXE を置いたフォルダに書き込み権限が必要です。
-
-画面の「文字起こしに時刻を表示」で、各確定結果の先頭にローカル時刻 `[hh:mm]` を付けるか切り替えられます。テキスト保存にも現在の表示設定が反映され、選択状態は同じ `asr-studio.preferences.json` に保存されます。新着結果のカードは短く光り、結果欄が末尾を表示している場合は自動で下へスクロールします。
-
-画面の「文字起こし結果を自動保存」を ON にすると、録音ごとに EXE 横の `transcripts` フォルダへ日時付きのテキストファイルを作り、確定した文字起こしが追加されるたびと録音停止時に内容を更新します。この切替も `asr-studio.preferences.json` に保存されます。途中の聞き取り結果は保存しません。「結果を消去」で画面を空にしても、録音中の自動保存ファイルに蓄積した結果は消しません。保存エラーは画面に表示します。
+設定のON/OFFとマイク選択は次回起動時にも引き継がれます。自動保存とログの利用にはEXEを置いたフォルダへの書き込み権限が必要です。
 
 ## 開発・ビルド
 
-Dev Containerでは Go 1.27.1、Node.js 26、Wails CLI v2.16.0、MinGW を使用します。
+Dev ContainerにはGo 1.27.1、Node.js 26、Wails CLI v2.16.0、MinGWを用意しています。
 
 ```bash
 npm ci --prefix frontend
-./scripts/generate-bindings.sh
-npm run build --prefix frontend
 npm test --prefix frontend
+npm run build --prefix frontend
 go test ./...
 ./scripts/build-windows.sh
 ```
 
-出力は `build/bin/asr_test_go.exe` です。初回ビルド時には同じフォルダに設定テンプレートもコピーします。生成済みの `frontend/wailsjs` をGitで管理するため、Goの公開メソッドを変更したら `generate-bindings.sh` を再実行してください。
+Windows版の出力は `build/bin/asr_test_go.exe` です。Goの公開メソッドを変更した場合は `./scripts/generate-bindings.sh` でフロントエンドのバインディングを更新してください。
 
-設定の読込・検証は `config.go`、同期APIへの発話送信は `transcription.go`、GPT Live接続は `live.go`、Googleのストリーミング接続は `google_stream.go` に分けています。ファイル保存は `persistence.go` に集約しています。フロントエンドの音声変換、履歴管理、自動保存の順序制御はそれぞれ `audio-encoding.ts`、`transcript-store.ts`、`autosave-session.ts` に置き、画面や実際のAPI接続なしでテストできます。録音停止時は、自動保存のON/OFFに関わらず処理中の認識を待ってから次の録音を受け付けます。
-
-## GitHub Releases
-
-`v0.0.1` のような `v` で始まるタグをpushすると、[Windows release workflow](.github/workflows/release.yml) がWindows上で検証・ビルドし、EXEと空の設定ファイルを入れたZIPをGitHub Releaseに添付します。アプリ画面右上に埋め込みバージョンが表示されます。Actions画面から手動実行した場合はActions Artifactのみ作成し、バージョンは `0.0.1` です。
+[Windows release workflow](.github/workflows/release.yml) は `v0.0.1` のような `v*` タグをpushしたときにReleaseを作成し、EXEとZIPを添付します。PRのマージだけでは起動しません。Actions画面から手動実行した場合はArtifactのみ作成します。
