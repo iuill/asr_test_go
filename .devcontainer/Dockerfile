@@ -24,4 +24,4 @@ RUN apt-get update \
 
 RUN GOBIN=/usr/local/bin go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION} \
     && go clean -modcache -cache \
-    && install -d -o node -g node /home/node/go /home/node/.codex /home/node/.config/gh
+    && install -d -o node -g node /home/node/go /home/node/.codex /home/node/.claude /home/node/.local /home/node/.local/bin /home/node/.config/gh
