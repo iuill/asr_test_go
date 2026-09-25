@@ -82,3 +82,25 @@ test('failed initialization does not save into a previous recording', async () =
   await session.write(() => 'new recording');
   assert.deepEqual(saved, ['new recording']);
 });
+
+test('distant mode includes the quiet lead-in and completes after silence', async () => {
+  const { SpeechSegmenter, microphoneConstraints } = await import('../src/speech-segmenter.ts');
+  const normal = new SpeechSegmenter('normal');
+  const distant = new SpeechSegmenter('distant');
+  const quiet = new Float32Array(160).fill(0.002);
+  const distantVoice = new Float32Array(160).fill(0.006);
+  for (let i = 0; i < 40; i++) {
+    normal.push(quiet, 16000);
+    distant.push(quiet, 16000);
+  }
+  const heard = distant.push(distantVoice, 16000);
+  assert.ok(heard.frames.length >= 30, 'start of the utterance should retain 0.3s of pre-roll');
+  assert.equal(normal.push(distantVoice, 16000).frames.length, 0);
+  let completed = null;
+  for (let i = 0; i < 81; i++) completed = distant.push(new Float32Array(160), 16000).completed || completed;
+  assert.ok(completed && completed.length > 16000, 'quiet voice and trailing silence should be sent');
+  assert.equal(distant.finish(), null);
+  assert.equal(microphoneConstraints('normal', '').noiseSuppression, true);
+  assert.equal(microphoneConstraints('distant', '').noiseSuppression, false);
+  assert.equal(microphoneConstraints('distant', '').echoCancellation, false);
+});

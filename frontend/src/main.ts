@@ -2,6 +2,7 @@ import type { main } from '../wailsjs/go/models';
 import { AutoSaveSession } from './autosave-session';
 import { TranscriptStore, formatEntry } from './transcript-store';
 import { encodeWav, encodeLivePCM } from './audio-encoding';
+import { microphoneConstraints, SpeechSegmenter, type CaptureMode } from './speech-segmenter';
 import './style.css';
 import appIcon from './assets/app-icon.svg';
 import { AppendLive, BeginAutoSave, CommitLive, EndAutoSave, GetInfo, LogDiagnostic, SaveTranscript, SetAutoSave, SetDebugLogging, SetShowTimestamps, StartLive, StopLive, Transcribe, WriteAutoSave } from '../wailsjs/go/main/App';
@@ -13,7 +14,7 @@ root.innerHTML = `
   <header><div class="brand"><img src="${appIcon}" alt=""><h1>ASR Studio</h1></div><span id="version" class="badge">v0.0.1</span></header>
   <main>
     <section class="panel intro"><div><h2>マイクから文字起こし</h2><p>GPT Liveは発話中に途中結果を表示します。他のモデルは発話後に送信します。APIの利用料金が発生します。</p></div></section>
-    <section class="panel"><div class="section-head"><h2>入力マイク</h2><button id="refreshMics" class="quiet">マイク一覧を更新</button></div><div class="mic-row"><div class="mic-control"><select id="microphone" aria-label="入力マイク"><option value="">システム既定のマイク</option></select><span id="activeMic" class="hint">録音開始後に使用マイクを表示します</span></div></div></section>
+    <section class="panel"><div class="section-head"><h2>入力マイク</h2><button id="refreshMics" class="quiet">マイク一覧を更新</button></div><div class="mic-row"><div class="mic-control"><select id="microphone" aria-label="入力マイク"><option value="">システム既定のマイク</option></select><span id="activeMic" class="hint">録音開始後に使用マイクを表示します</span></div></div><label class="mic-mode"><input id="distantVoices" type="checkbox"> 離れた声を拾う <span class="hint">周囲の音も拾いやすくなります</span></label></section>
     <details id="modelsPanel" class="panel" open><summary><strong>モデル</strong><span id="modelSummary" class="hint"></span></summary><div class="model-detail"><div class="section-head"><span class="hint">利用するモデルを選択</span><button id="reload" class="quiet">設定を再読込</button></div><p id="configMessage" class="hint"></p><div id="models" class="models"></div></div></details>
     <div class="diagnostics" aria-label="表示と保存の設定">
       <div class="diagnostic-option"><label><input id="showTimestamps" type="checkbox"> 文字起こしに時刻を表示</label><span class="hint">結果と保存ファイルに反映</span></div>
@@ -33,10 +34,7 @@ let source: MediaStreamAudioSourceNode | null = null;
 let analyser: AnalyserNode | null = null;
 let silentGain: GainNode | null = null;
 let animationFrame = 0;
-let chunks: Float32Array[] = [];
-let samples = 0;
-let active = false;
-let silenceFrames = 0;
+let segmenter: SpeechSegmenter | null = null;
 let requestChains = new Map<string, Promise<void>>();
 let liveQueue: Promise<void> = Promise.resolve();
 let liveActive = false;
@@ -327,13 +325,14 @@ function rotateLiveConnection() {
   });
 }
 function flush() {
-  if (!context || !samples) return;
-  const audio = new Float32Array(samples); let offset = 0;
-  for (const chunk of chunks) { audio.set(chunk, offset); offset += chunk.length; }
-  chunks = []; samples = 0; silenceFrames = 0; active = false;
+  const audio = segmenter?.finish();
+  if (!context || !audio) return;
+  submitAudio(audio, context.sampleRate);
+}
+function submitAudio(audio: Float32Array, sampleRate: number) {
   queueLiveCommit();
-  if (audio.length < context.sampleRate * 0.35) return;
-  const wav = encodeWav(audio, context.sampleRate);
+  if (audio.length < sampleRate * 0.35) return;
+  const wav = encodeWav(audio, sampleRate);
   for (const id of selected) {
     if (id === 'gpt-live-transcribe') continue;
     const previous = requestChains.get(id) || Promise.resolve();
@@ -358,15 +357,17 @@ async function start() {
     transcripts.beginRecording();
     livePartial.clear();
     const deviceId = ($('microphone') as HTMLSelectElement).value;
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, echoCancellation: true, noiseSuppression: true }, video: false });
+    const mode: CaptureMode = ($('distantVoices') as HTMLInputElement).checked ? 'distant' : 'normal';
+    stream = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(mode, deviceId), video: false });
     void LogDiagnostic('microphone_started');
     const track = stream.getAudioTracks()[0];
-    $('activeMic').textContent = `使用中: ${track.label || '名称不明のマイク'}`;
+    $('activeMic').textContent = `使用中: ${track.label || '名称不明のマイク'}${mode === 'distant' ? ' · 離れた声を拾う' : ''}`;
     await refreshMicrophones(false);
     if (selected.has('gpt-live-transcribe')) { await StartLive(); liveActive = true; liveFailed = false; liveQueue = Promise.resolve(); }
     await beginAutoSave();
     if (track.readyState === 'ended') throw new Error('マイクが切断されました');
     track.addEventListener('ended', () => { if (phase === 'recording') void stop(); });
+    segmenter = new SpeechSegmenter(mode);
     context = new AudioContext(); source = context.createMediaStreamSource(stream);
     analyser = context.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.72;
     silentGain = context.createGain(); silentGain.gain.value = 0;
@@ -375,14 +376,9 @@ async function start() {
     processor = context.createScriptProcessor(2048, 1, 1);
     processor.onaudioprocess = event => {
       const frame = new Float32Array(event.inputBuffer.getChannelData(0));
-      let energy = 0; for (const sample of frame) energy += sample * sample;
-      const rms = Math.sqrt(energy / frame.length);
-      const speaking = rms > 0.012;
-      if (speaking || active) { chunks.push(frame); samples += frame.length; active = true; queueLiveFrame(frame); }
-      if (active) {
-        silenceFrames = speaking ? 0 : silenceFrames + frame.length;
-        if (silenceFrames >= context!.sampleRate * 0.8 || samples >= context!.sampleRate * 15) flush();
-      }
+      const { frames, completed } = segmenter!.push(frame, context!.sampleRate);
+      for (const chunk of frames) queueLiveFrame(chunk);
+      if (completed) submitAudio(completed, context!.sampleRate);
     };
     source.connect(processor); processor.connect(context.destination);
     setRecordingPhase('recording');
@@ -397,6 +393,7 @@ function setRecordingPhase(next: RecordingPhase) {
   ($('start') as HTMLButtonElement).disabled = next !== 'idle';
   ($('stop') as HTMLButtonElement).disabled = next !== 'recording';
   ($('microphone') as HTMLSelectElement).disabled = next !== 'idle';
+  ($('distantVoices') as HTMLInputElement).disabled = next !== 'idle';
   ($('reload') as HTMLButtonElement).disabled = next !== 'idle';
   ($('autoSave') as HTMLInputElement).disabled = next === 'starting' || next === 'stopping';
   renderModels();
@@ -415,7 +412,7 @@ async function stop() {
   stream?.getTracks().forEach(track => track.stop());
   cancelAnimationFrame(animationFrame); analyser = null; silentGain = null; drawSpectrum();
   try { await context?.close(); } catch (error) { errors.push(String(error)); }
-  context = null; processor = null; source = null; stream = null;
+  context = null; processor = null; source = null; stream = null; segmenter = null;
   if (liveActive) {
     await liveQueue;
     try { await StopLive(); } catch (error) { errors.push(`Live停止エラー: ${String(error)}`); }
@@ -434,6 +431,8 @@ async function stop() {
   $('activeMic').textContent = '録音停止中';
 }
 $('microphone').addEventListener('change', () => localStorage.setItem('asr-microphone-id', ($('microphone') as HTMLSelectElement).value));
+($('distantVoices') as HTMLInputElement).checked = localStorage.getItem('asr-distant-voices') === 'true';
+$('distantVoices').addEventListener('change', () => localStorage.setItem('asr-distant-voices', String(($('distantVoices') as HTMLInputElement).checked)));
 $('refreshMics').addEventListener('click', () => refreshMicrophones(true).catch(error => $('activeMic').textContent = `マイク一覧を取得できません: ${String(error)}`));
 navigator.mediaDevices?.addEventListener?.('devicechange', () => { void refreshMicrophones(false); });
 void refreshMicrophones(false);
